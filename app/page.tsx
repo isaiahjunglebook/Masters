@@ -7,8 +7,8 @@ type SortMode = "recent" | "oldest" | "most_viewed";
 interface Video {
   id: string;
   title: string;
-  publishedAt: string;
-  viewCount: number;
+  published: string;
+  views: string;
   url: string;
 }
 
@@ -25,21 +25,6 @@ const SORT_LABELS: Record<SortMode, string> = {
   oldest: "Oldest",
   most_viewed: "Most Viewed",
 };
-
-function formatViews(n: number) {
-  if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M views`;
-  if (n >= 1_000) return `${(n / 1_000).toFixed(1)}K views`;
-  return `${n} views`;
-}
-
-function formatDate(iso: string) {
-  if (!iso) return "";
-  return new Date(iso).toLocaleDateString(undefined, {
-    year: "numeric",
-    month: "short",
-    day: "numeric",
-  });
-}
 
 export default function Home() {
   // Password gate (kept in memory only — sent with every API call)
@@ -313,7 +298,7 @@ export default function Home() {
                     </a>
                   </div>
                   <div className="video-meta">
-                    {formatViews(v.viewCount)} · {formatDate(v.publishedAt)}
+                    {[v.views, v.published].filter(Boolean).join(" · ")}
                   </div>
                 </div>
               </li>

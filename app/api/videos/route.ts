@@ -1,153 +1,83 @@
+import { Innertube } from "youtubei.js";
 import { checkPassword, unauthorized } from "@/lib/auth";
 
 export const runtime = "nodejs";
 export const maxDuration = 60;
-
-const YT_API = "https://www.googleapis.com/youtube/v3";
 
 type SortMode = "recent" | "oldest" | "most_viewed";
 
 interface VideoItem {
   id: string;
   title: string;
-  publishedAt: string;
-  viewCount: number;
+  published: string;
+  views: string;
   url: string;
 }
 
-/** Figure out what kind of channel reference the user pasted. */
-function parseChannelInput(
-  raw: string
-): { kind: "id" | "handle" | "user" | "search"; value: string } {
+// Maps our sort modes to the filter chips on a channel's Videos tab
+// ("Latest" / "Popular" / "Oldest") — YouTube does the sorting for us.
+const FILTER_FOR_SORT: Record<SortMode, string | null> = {
+  recent: null, // default order
+  most_viewed: "Popular",
+  oldest: "Oldest",
+};
+
+/** Normalize whatever the user pasted into a resolvable youtube.com URL,
+ *  or a bare UC… channel id. */
+function normalizeChannelInput(raw: string): { id?: string; url?: string } {
   const input = raw.trim();
-  if (/^UC[\w-]{22}$/.test(input)) return { kind: "id", value: input };
-  if (input.startsWith("@")) return { kind: "handle", value: input };
+  if (/^UC[\w-]{22}$/.test(input)) return { id: input };
 
-  const url = input.match(/youtube\.com\/(channel\/|user\/|c\/|@)?([^/?&\s]+)/i);
-  if (url) {
-    const [, prefix, name] = url;
-    if (prefix === "channel/" && /^UC[\w-]{22}$/.test(name))
-      return { kind: "id", value: name };
-    if (prefix === "user/") return { kind: "user", value: name };
-    if (prefix === "@") return { kind: "handle", value: "@" + name };
-    if (prefix === "c/") return { kind: "search", value: name };
-    // youtube.com/somename — could be a legacy custom URL
-    if (!prefix) return { kind: "search", value: name };
+  const fromUrl = input.match(/youtube\.com\/(channel\/(UC[\w-]{22}))/i);
+  if (fromUrl) return { id: fromUrl[2] };
+
+  if (/^https?:\/\//i.test(input) || /youtube\.com\//i.test(input)) {
+    const path = input.replace(/^https?:\/\//i, "").replace(/^[^/]*youtube\.com/i, "");
+    return { url: `https://www.youtube.com${path}` };
   }
-  // Bare name without @ — try it as a handle first (resolveChannel falls
-  // back to search if the handle lookup finds nothing)
-  return { kind: "handle", value: "@" + input };
+  const handle = input.startsWith("@") ? input : `@${input}`;
+  return { url: `https://www.youtube.com/${handle}` };
 }
 
-async function ytFetch(path: string, params: Record<string, string>) {
-  const qs = new URLSearchParams({ ...params, key: process.env.YOUTUBE_API_KEY! });
-  const res = await fetch(`${YT_API}/${path}?${qs}`);
-  const data = await res.json();
-  if (!res.ok) {
-    const msg = data?.error?.message ?? `YouTube API error (${res.status})`;
-    throw new Error(msg);
-  }
-  return data;
-}
-
-/** Resolve any channel reference to { channelId, title, uploadsPlaylistId }. */
-async function resolveChannel(input: string) {
-  const parsed = parseChannelInput(input);
-  const part = { part: "snippet,contentDetails" };
-
-  let data;
-  if (parsed.kind === "id") {
-    data = await ytFetch("channels", { ...part, id: parsed.value });
-  } else if (parsed.kind === "handle") {
-    data = await ytFetch("channels", { ...part, forHandle: parsed.value });
-  } else if (parsed.kind === "user") {
-    data = await ytFetch("channels", { ...part, forUsername: parsed.value });
+/** Pull id/title/published/views out of the various node types a channel's
+ *  Videos tab can return (new LockupView UI or classic Video/GridVideo). */
+function toVideoItem(node: any): VideoItem | null {
+  // New YouTube UI
+  if (node.type === "LockupView") {
+    if (node.content_type && node.content_type !== "VIDEO") return null;
+    const id = node.content_id;
+    if (!id) return null;
+    const parts: string[] = (node.metadata?.metadata?.metadata_rows ?? [])
+      .flatMap((row: any) => row?.metadata_parts ?? [])
+      .map((p: any) => p?.text?.toString?.() ?? "")
+      .filter(Boolean);
+    return {
+      id,
+      title: node.metadata?.title?.toString?.() ?? id,
+      views: parts.find((t) => /view/i.test(t)) ?? "",
+      published: parts.find((t) => /ago|streamed|premier/i.test(t)) ?? "",
+      url: `https://www.youtube.com/watch?v=${id}`,
+    };
   }
 
-  // Fall back to search for legacy /c/ URLs, bare names, or failed lookups
-  if (!data?.items?.length) {
-    const search = await ytFetch("search", {
-      part: "snippet",
-      type: "channel",
-      maxResults: "1",
-      q: parsed.value.replace(/^@/, ""),
-    });
-    const channelId = search.items?.[0]?.snippet?.channelId;
-    if (!channelId) throw new Error(`Couldn't find a channel for "${input}"`);
-    data = await ytFetch("channels", { ...part, id: channelId });
-  }
-
-  const ch = data.items[0];
+  // Classic renderers
+  const id = node.video_id;
+  if (!id) return null;
   return {
-    channelId: ch.id as string,
-    title: ch.snippet.title as string,
-    uploadsPlaylistId: ch.contentDetails.relatedPlaylists.uploads as string,
+    id,
+    title: node.title?.toString?.() ?? id,
+    views:
+      node.view_count?.toString?.() ??
+      node.views?.toString?.() ??
+      node.short_view_count?.toString?.() ??
+      "",
+    published: node.published?.toString?.() ?? "",
+    url: `https://www.youtube.com/watch?v=${id}`,
   };
-}
-
-/** Page through the uploads playlist collecting id/title/publishedAt. */
-async function fetchAllUploads(
-  playlistId: string,
-  earlyExitAt: number | null
-): Promise<VideoItem[]> {
-  const videos: VideoItem[] = [];
-  let pageToken: string | undefined;
-  // Safety cap: 100 pages = 5000 videos, plenty for a personal channel
-  for (let page = 0; page < 100; page++) {
-    const data = await ytFetch("playlistItems", {
-      part: "snippet,contentDetails",
-      playlistId,
-      maxResults: "50",
-      ...(pageToken ? { pageToken } : {}),
-    });
-    for (const item of data.items ?? []) {
-      const id = item.contentDetails?.videoId;
-      if (!id) continue;
-      videos.push({
-        id,
-        title: item.snippet?.title ?? id,
-        publishedAt:
-          item.contentDetails?.videoPublishedAt ?? item.snippet?.publishedAt ?? "",
-        viewCount: 0,
-        url: `https://www.youtube.com/watch?v=${id}`,
-      });
-    }
-    // Uploads playlists are newest-first, so for "recent" we can stop
-    // as soon as we have enough — saves quota on big channels
-    if (earlyExitAt !== null && videos.length >= earlyExitAt) break;
-    pageToken = data.nextPageToken;
-    if (!pageToken) break;
-  }
-  return videos;
-}
-
-/** Fill in view counts via videos.list, 50 ids per call. */
-async function attachViewCounts(videos: VideoItem[]) {
-  for (let i = 0; i < videos.length; i += 50) {
-    const batch = videos.slice(i, i + 50);
-    const data = await ytFetch("videos", {
-      part: "statistics",
-      id: batch.map((v) => v.id).join(","),
-      maxResults: "50",
-    });
-    const counts = new Map<string, number>(
-      (data.items ?? []).map((item: any) => [
-        item.id,
-        Number(item.statistics?.viewCount ?? 0),
-      ])
-    );
-    for (const v of batch) v.viewCount = counts.get(v.id) ?? 0;
-  }
 }
 
 export async function POST(req: Request) {
   if (!checkPassword(req)) return unauthorized();
-  if (!process.env.YOUTUBE_API_KEY) {
-    return Response.json(
-      { error: "YOUTUBE_API_KEY is not configured on the server" },
-      { status: 500 }
-    );
-  }
 
   try {
     const body = await req.json();
@@ -161,32 +91,70 @@ export async function POST(req: Request) {
       return Response.json({ error: "Enter a channel URL or handle" }, { status: 400 });
     }
 
-    const channel = await resolveChannel(channelInput);
-    const videos = await fetchAllUploads(
-      channel.uploadsPlaylistId,
-      sort === "recent" ? count : null
-    );
+    const yt = await Innertube.create({ retrieve_player: false });
 
-    videos.sort((a, b) =>
-      sort === "oldest"
-        ? a.publishedAt.localeCompare(b.publishedAt)
-        : b.publishedAt.localeCompare(a.publishedAt)
-    );
+    // Resolve whatever was pasted to a channel id
+    const target = normalizeChannelInput(channelInput);
+    let channelId = target.id;
+    if (!channelId && target.url) {
+      try {
+        const endpoint = await yt.resolveURL(target.url);
+        channelId = endpoint.payload?.browseId;
+      } catch {
+        /* fall through to search */
+      }
+    }
+    if (!channelId || !channelId.startsWith("UC")) {
+      const query = channelInput.replace(/^.*youtube\.com\//i, "").replace(/^@/, "");
+      const search = await yt.search(query, { type: "channel" });
+      for (const node of (search.results ?? []) as any[]) {
+        if (node.type === "Channel" && node.id) {
+          channelId = node.id;
+          break;
+        }
+        if (node.type === "LockupView" && node.content_type === "CHANNEL" && node.content_id) {
+          channelId = node.content_id;
+          break;
+        }
+      }
+    }
+    if (!channelId) {
+      return Response.json(
+        { error: `Couldn't find a channel for "${channelInput}"` },
+        { status: 404 }
+      );
+    }
 
-    let selected: VideoItem[];
-    if (sort === "most_viewed") {
-      await attachViewCounts(videos);
-      selected = [...videos]
-        .sort((a, b) => b.viewCount - a.viewCount)
-        .slice(0, count);
-    } else {
-      selected = videos.slice(0, count);
-      await attachViewCounts(selected);
+    const channel = await yt.getChannel(channelId);
+    const channelTitle =
+      (channel.metadata?.title as string | undefined) ?? channelInput;
+
+    let feed: any = await channel.getVideos();
+
+    // Apply YouTube's own sort chip when we're not using the default order.
+    // Tiny channels sometimes have no chips — fall back to default order.
+    const wantedFilter = FILTER_FOR_SORT[sort];
+    if (wantedFilter && feed.filters?.includes(wantedFilter)) {
+      feed = await feed.applyFilter(wantedFilter);
+    }
+
+    const videos: VideoItem[] = [];
+    const seen = new Set<string>();
+    for (let page = 0; page < 50; page++) {
+      for (const node of feed.videos ?? []) {
+        const item = toVideoItem(node);
+        if (item && !seen.has(item.id)) {
+          seen.add(item.id);
+          videos.push(item);
+        }
+      }
+      if (videos.length >= count || !feed.has_continuation) break;
+      feed = await feed.getContinuation();
     }
 
     return Response.json({
-      channel: { id: channel.channelId, title: channel.title },
-      videos: selected,
+      channel: { id: channelId, title: channelTitle },
+      videos: videos.slice(0, count),
     });
   } catch (err: any) {
     return Response.json(
