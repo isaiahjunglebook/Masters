@@ -46,58 +46,98 @@ function cleanText(joined: string): string {
   return lines.join("\n");
 }
 
-/**
- * Fetch a video's transcript text, trying two independent routes:
- *  1. The watch-page transcript panel (what "Show transcript" uses).
- *  2. The raw caption-track file the player itself loads (timedtext),
- *     preferring the auto-generated (asr) English track.
- * Throws with the real error from each attempt so failures are diagnosable.
- */
-async function fetchTranscriptText(info: any): Promise<string> {
-  const errors: string[] = [];
-
-  try {
-    const transcriptInfo = await info.getTranscript();
-    const segments =
-      transcriptInfo?.transcript?.content?.body?.initial_segments ?? [];
-    const text = cleanText(
-      segments.map((seg: any) => seg?.snippet?.text?.toString() ?? "").join(" ")
-    );
-    if (text) return text;
-    errors.push(`transcript panel empty (${segments.length} segments)`);
-  } catch (err: any) {
-    errors.push(`transcript panel: ${err?.message ?? "unknown error"}`);
-  }
-
+/** Download and parse the caption-track file (timedtext) from a player
+ *  response, preferring the auto-generated English track. Returns clean text,
+ *  or null after pushing a diagnostic onto `errors`. */
+async function captionsFromTracks(
+  info: any,
+  label: string,
+  errors: string[]
+): Promise<string | null> {
   try {
     const tracks: any[] = info.captions?.caption_tracks ?? [];
     if (!tracks.length) {
-      errors.push("no caption tracks in player response");
-    } else {
-      const track =
-        tracks.find((t) => t.kind === "asr" && t.language_code?.startsWith("en")) ??
-        tracks.find((t) => t.kind === "asr") ??
-        tracks[0];
-      const url =
-        track.base_url + (track.base_url.includes("?") ? "&" : "?") + "fmt=json3";
-      const res = await fetch(url);
-      const body = await res.text();
-      if (!res.ok || !body) {
-        errors.push(`timedtext fetch: HTTP ${res.status}, ${body.length} bytes`);
-      } else {
-        const data = JSON.parse(body);
-        const text = cleanText(
-          (data.events ?? [])
-            .flatMap((ev: any) => ev.segs ?? [])
-            .map((seg: any) => seg.utf8 ?? "")
-            .join(" ")
-        );
-        if (text) return text;
-        errors.push("timedtext track parsed empty");
-      }
+      const ps = info.playability_status;
+      const status = [ps?.status, ps?.reason].filter(Boolean).join(" — ");
+      errors.push(`${label}: no caption tracks (playability: ${status || "unknown"})`);
+      return null;
     }
+    const track =
+      tracks.find((t) => t.kind === "asr" && t.language_code?.startsWith("en")) ??
+      tracks.find((t) => t.kind === "asr") ??
+      tracks[0];
+    const url =
+      track.base_url + (track.base_url.includes("?") ? "&" : "?") + "fmt=json3";
+    const res = await fetch(url);
+    const body = await res.text();
+    if (!res.ok || !body) {
+      errors.push(`${label}: timedtext HTTP ${res.status}, ${body.length} bytes`);
+      return null;
+    }
+    const data = JSON.parse(body);
+    const text = cleanText(
+      (data.events ?? [])
+        .flatMap((ev: any) => ev.segs ?? [])
+        .map((seg: any) => seg.utf8 ?? "")
+        .join(" ")
+    );
+    if (text) return text;
+    errors.push(`${label}: timedtext track parsed empty`);
+    return null;
   } catch (err: any) {
-    errors.push(`timedtext: ${err?.message ?? "unknown error"}`);
+    errors.push(`${label}: ${err?.message ?? "unknown error"}`);
+    return null;
+  }
+}
+
+/**
+ * Fetch a video's transcript, trying progressively less-blocked routes:
+ *  1. WEB client: transcript panel (what "Show transcript" uses), then the
+ *     player's caption-track file (timedtext).
+ *  2. ANDROID, then TV client player responses — YouTube serves these
+ *     less-degraded responses on datacenter IPs (like Vercel's).
+ * Throws with every attempt's real error so failures stay diagnosable.
+ */
+async function fetchTranscript(
+  yt: any,
+  id: string,
+  providedTitle?: string
+): Promise<{ title: string; text: string }> {
+  const errors: string[] = [];
+  let title = providedTitle ?? id;
+
+  try {
+    const info = await yt.getInfo(id);
+    title = info.basic_info?.title ?? title;
+
+    try {
+      const transcriptInfo = await info.getTranscript();
+      const segments =
+        transcriptInfo?.transcript?.content?.body?.initial_segments ?? [];
+      const text = cleanText(
+        segments.map((seg: any) => seg?.snippet?.text?.toString() ?? "").join(" ")
+      );
+      if (text) return { title, text };
+      errors.push(`transcript panel empty (${segments.length} segments)`);
+    } catch (err: any) {
+      errors.push(`transcript panel: ${err?.message ?? "unknown error"}`);
+    }
+
+    const text = await captionsFromTracks(info, "WEB", errors);
+    if (text) return { title, text };
+  } catch (err: any) {
+    errors.push(`getInfo: ${err?.message ?? "unknown error"}`);
+  }
+
+  for (const client of ["ANDROID", "TV"]) {
+    try {
+      const info = await yt.getBasicInfo(id, { client });
+      title = info.basic_info?.title ?? title;
+      const text = await captionsFromTracks(info, client, errors);
+      if (text) return { title, text };
+    } catch (err: any) {
+      errors.push(`${client}: ${err?.message ?? "unknown error"}`);
+    }
   }
 
   throw new Error(errors.join(" | "));
@@ -136,10 +176,7 @@ export async function POST(req: Request) {
   for (let i = 0; i < requested.length; i++) {
     const { id, title: providedTitle } = requested[i];
     try {
-      const info = await yt.getInfo(id);
-      const title = info.basic_info.title ?? providedTitle ?? id;
-
-      const text = await fetchTranscriptText(info);
+      const { title, text } = await fetchTranscript(yt, id, providedTitle);
 
       const header = [
         `Title: ${title}`,
@@ -153,7 +190,7 @@ export async function POST(req: Request) {
     } catch (err: any) {
       // Report the real error text (trimmed) — masking it behind a friendly
       // label makes failures impossible to diagnose remotely
-      const reason = (err?.message ?? "Unknown error").slice(0, 300);
+      const reason = (err?.message ?? "Unknown error").slice(0, 500);
       console.log(`[captions] skipped ${id}: ${reason}`);
       skipped.push({ id, title: providedTitle ?? id, reason });
     }
