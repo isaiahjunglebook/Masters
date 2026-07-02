@@ -23,12 +23,10 @@ interface Skipped {
   reason: string;
 }
 
-/** Turn transcript segments into clean prose: no timestamps, no [Music]-style
+/** Clean prose out of raw caption text: no timestamps, no [Music]-style
  *  tags, wrapped at ~100 chars so the .txt is readable. */
-function cleanTranscript(segments: any[]): string {
-  const raw = segments
-    .map((seg) => seg?.snippet?.text?.toString() ?? "")
-    .join(" ")
+function cleanText(joined: string): string {
+  const raw = joined
     .replace(/\[[^\]]*\]/g, " ") // [Music], [Applause], ...
     .replace(/\s+/g, " ")
     .trim();
@@ -46,6 +44,63 @@ function cleanTranscript(segments: any[]): string {
   }
   if (line) lines.push(line);
   return lines.join("\n");
+}
+
+/**
+ * Fetch a video's transcript text, trying two independent routes:
+ *  1. The watch-page transcript panel (what "Show transcript" uses).
+ *  2. The raw caption-track file the player itself loads (timedtext),
+ *     preferring the auto-generated (asr) English track.
+ * Throws with the real error from each attempt so failures are diagnosable.
+ */
+async function fetchTranscriptText(info: any): Promise<string> {
+  const errors: string[] = [];
+
+  try {
+    const transcriptInfo = await info.getTranscript();
+    const segments =
+      transcriptInfo?.transcript?.content?.body?.initial_segments ?? [];
+    const text = cleanText(
+      segments.map((seg: any) => seg?.snippet?.text?.toString() ?? "").join(" ")
+    );
+    if (text) return text;
+    errors.push(`transcript panel empty (${segments.length} segments)`);
+  } catch (err: any) {
+    errors.push(`transcript panel: ${err?.message ?? "unknown error"}`);
+  }
+
+  try {
+    const tracks: any[] = info.captions?.caption_tracks ?? [];
+    if (!tracks.length) {
+      errors.push("no caption tracks in player response");
+    } else {
+      const track =
+        tracks.find((t) => t.kind === "asr" && t.language_code?.startsWith("en")) ??
+        tracks.find((t) => t.kind === "asr") ??
+        tracks[0];
+      const url =
+        track.base_url + (track.base_url.includes("?") ? "&" : "?") + "fmt=json3";
+      const res = await fetch(url);
+      const body = await res.text();
+      if (!res.ok || !body) {
+        errors.push(`timedtext fetch: HTTP ${res.status}, ${body.length} bytes`);
+      } else {
+        const data = JSON.parse(body);
+        const text = cleanText(
+          (data.events ?? [])
+            .flatMap((ev: any) => ev.segs ?? [])
+            .map((seg: any) => seg.utf8 ?? "")
+            .join(" ")
+        );
+        if (text) return text;
+        errors.push("timedtext track parsed empty");
+      }
+    }
+  } catch (err: any) {
+    errors.push(`timedtext: ${err?.message ?? "unknown error"}`);
+  }
+
+  throw new Error(errors.join(" | "));
 }
 
 function safeFilename(title: string, id: string): string {
@@ -84,11 +139,7 @@ export async function POST(req: Request) {
       const info = await yt.getInfo(id);
       const title = info.basic_info.title ?? providedTitle ?? id;
 
-      const transcriptInfo = await info.getTranscript();
-      const segments =
-        transcriptInfo?.transcript?.content?.body?.initial_segments ?? [];
-      const text = cleanTranscript(segments as any[]);
-      if (!text) throw new Error("Transcript is empty");
+      const text = await fetchTranscriptText(info);
 
       const header = [
         `Title: ${title}`,
@@ -100,9 +151,9 @@ export async function POST(req: Request) {
       zip.file(safeFilename(title, id), header + text + "\n");
       successCount++;
     } catch (err: any) {
-      const reason = /transcript|caption/i.test(err?.message ?? "")
-        ? "No captions available"
-        : err?.message ?? "Unknown error";
+      // Report the real error text (trimmed) — masking it behind a friendly
+      // label makes failures impossible to diagnose remotely
+      const reason = (err?.message ?? "Unknown error").slice(0, 300);
       console.log(`[captions] skipped ${id}: ${reason}`);
       skipped.push({ id, title: providedTitle ?? id, reason });
     }
