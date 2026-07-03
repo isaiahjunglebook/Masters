@@ -46,6 +46,42 @@ function cleanText(joined: string): string {
   return lines.join("\n");
 }
 
+/** Decode the handful of XML/HTML entities that appear in timedtext captions
+ *  (and strip any inline formatting tags). `&amp;` is decoded last so an
+ *  entity like `&amp;#39;` doesn't get half-decoded into a broken sequence. */
+function decodeEntities(s: string): string {
+  return s
+    .replace(/<[^>]+>/g, " ")
+    .replace(/&#(\d+);/g, (_, n) => String.fromCharCode(parseInt(n, 10)))
+    .replace(/&#x([0-9a-fA-F]+);/g, (_, n) => String.fromCharCode(parseInt(n, 16)))
+    .replace(/&lt;/g, "<")
+    .replace(/&gt;/g, ">")
+    .replace(/&quot;/g, '"')
+    .replace(/&apos;/g, "'")
+    .replace(/&amp;/g, "&");
+}
+
+/** Parse a timedtext caption body into plain text. YouTube serves two shapes
+ *  depending on the client/URL: the newer `json3` (an events/segs tree) and
+ *  the classic XML transcript (`<text start=…>escaped words</text>`). The
+ *  ANDROID/TV clients often return XML even when json3 is requested, so we
+ *  detect the shape rather than assuming one. */
+function parseTimedtext(body: string): string {
+  if (body.trimStart().startsWith("{")) {
+    const data = JSON.parse(body);
+    return cleanText(
+      (data.events ?? [])
+        .flatMap((ev: any) => ev.segs ?? [])
+        .map((seg: any) => seg.utf8 ?? "")
+        .join(" ")
+    );
+  }
+  const parts = [...body.matchAll(/<text[^>]*>([\s\S]*?)<\/text>/g)].map((m) =>
+    decodeEntities(m[1])
+  );
+  return cleanText(parts.join(" "));
+}
+
 /** Download and parse the caption-track file (timedtext) from a player
  *  response, preferring the auto-generated English track. Returns clean text,
  *  or null after pushing a diagnostic onto `errors`. */
@@ -74,13 +110,7 @@ async function captionsFromTracks(
       errors.push(`${label}: timedtext HTTP ${res.status}, ${body.length} bytes`);
       return null;
     }
-    const data = JSON.parse(body);
-    const text = cleanText(
-      (data.events ?? [])
-        .flatMap((ev: any) => ev.segs ?? [])
-        .map((seg: any) => seg.utf8 ?? "")
-        .join(" ")
-    );
+    const text = parseTimedtext(body);
     if (text) return text;
     errors.push(`${label}: timedtext track parsed empty`);
     return null;
