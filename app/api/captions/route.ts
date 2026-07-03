@@ -61,11 +61,13 @@ function decodeEntities(s: string): string {
     .replace(/&amp;/g, "&");
 }
 
-/** Parse a timedtext caption body into plain text. YouTube serves two shapes
- *  depending on the client/URL: the newer `json3` (an events/segs tree) and
- *  the classic XML transcript (`<text start=…>escaped words</text>`). The
- *  ANDROID/TV clients often return XML even when json3 is requested, so we
- *  detect the shape rather than assuming one. */
+/** Parse a timedtext caption body into plain text. YouTube serves several
+ *  shapes depending on the client/URL, and the ANDROID/TV clients often return
+ *  XML even when json3 is requested, so we detect the shape rather than assume:
+ *    - json3: an events/segs tree
+ *    - srv1:  <transcript><text start=…>escaped words</text></transcript>
+ *    - srv3:  <timedtext><body><p t=… d=…>…<s>word</s></p></body></timedtext>
+ *  Returns "" if nothing recognizable is found (caller reports a diagnostic). */
 function parseTimedtext(body: string): string {
   if (body.trimStart().startsWith("{")) {
     const data = JSON.parse(body);
@@ -76,10 +78,18 @@ function parseTimedtext(body: string): string {
         .join(" ")
     );
   }
-  const parts = [...body.matchAll(/<text[^>]*>([\s\S]*?)<\/text>/g)].map((m) =>
-    decodeEntities(m[1])
+  // srv1: text lives directly inside <text> elements.
+  const textEls = [...body.matchAll(/<text[^>]*>([\s\S]*?)<\/text>/g)];
+  if (textEls.length) {
+    return cleanText(textEls.map((m) => decodeEntities(m[1])).join(" "));
+  }
+  // srv3: text lives inside <p> elements, sometimes split across per-word <s>
+  // segments. Strip the <s> tags with NO space so segments rejoin with their
+  // own spacing (auto-captions split some words across <s> for timing).
+  const paragraphs = [...body.matchAll(/<p[^>]*>([\s\S]*?)<\/p>/g)].map((m) =>
+    decodeEntities(m[1].replace(/<\/?s\b[^>]*>/g, ""))
   );
-  return cleanText(parts.join(" "));
+  return cleanText(paragraphs.join(" "));
 }
 
 /** Download and parse the caption-track file (timedtext) from a player
@@ -102,8 +112,14 @@ async function captionsFromTracks(
       tracks.find((t) => t.kind === "asr" && t.language_code?.startsWith("en")) ??
       tracks.find((t) => t.kind === "asr") ??
       tracks[0];
-    const url =
-      track.base_url + (track.base_url.includes("?") ? "&" : "?") + "fmt=json3";
+    // Drop any fmt the track URL already carries (ANDROID/TV tracks often ship
+    // fmt=srv3), then request json3 explicitly — a conflicting fmt is a likely
+    // reason YouTube ignores our request and returns XML.
+    const cleaned = track.base_url.replace(
+      /([?&])fmt=[^&]*(&|$)/g,
+      (_m: string, sep: string, tail: string) => (tail === "&" ? sep : "")
+    );
+    const url = cleaned + (cleaned.includes("?") ? "&" : "?") + "fmt=json3";
     const res = await youtubeFetch(url);
     const body = await res.text();
     if (!res.ok || !body) {
@@ -112,7 +128,10 @@ async function captionsFromTracks(
     }
     const text = parseTimedtext(body);
     if (text) return text;
-    errors.push(`${label}: timedtext track parsed empty`);
+    // Surface the start of the raw body so an unrecognized format is
+    // diagnosable from the skip reason without another round-trip.
+    const snippet = body.replace(/\s+/g, " ").trim().slice(0, 200);
+    errors.push(`${label}: timedtext parsed empty — starts: "${snippet}"`);
     return null;
   } catch (err: any) {
     errors.push(`${label}: ${err?.message ?? "unknown error"}`);
