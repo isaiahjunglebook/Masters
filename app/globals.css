@@ -56,7 +56,8 @@ label {
 
 input[type="text"],
 input[type="password"],
-input[type="number"] {
+input[type="number"],
+textarea {
   width: 100%;
   padding: 10px 12px;
   border-radius: 8px;
@@ -66,9 +67,36 @@ input[type="number"] {
   font-size: 15px;
 }
 
-input:focus {
+textarea {
+  font-family: inherit;
+  line-height: 1.5;
+  resize: vertical;
+  min-height: 96px;
+}
+
+input:focus,
+textarea:focus {
   outline: none;
   border-color: var(--accent);
+}
+
+.or-divider {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin: 20px 0;
+  color: var(--muted);
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+}
+
+.or-divider::before,
+.or-divider::after {
+  content: "";
+  flex: 1;
+  height: 1px;
+  background: var(--border);
 }
 
 button {

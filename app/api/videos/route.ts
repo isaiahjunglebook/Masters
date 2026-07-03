@@ -76,11 +76,71 @@ function toVideoItem(node: any): VideoItem | null {
   };
 }
 
+/** Look up titles for a list of video ids with limited concurrency, so a
+ *  pasted batch resolves quickly without hammering YouTube. A per-video
+ *  failure falls back to the id as the title, so the video still appears in
+ *  the list and can still be attempted at download time. Input order is kept. */
+async function videosForIds(yt: any, ids: string[]): Promise<VideoItem[]> {
+  const out: VideoItem[] = new Array(ids.length);
+  const CONCURRENCY = 5;
+  let next = 0;
+  async function worker() {
+    while (next < ids.length) {
+      const i = next++;
+      const id = ids[i];
+      let title = id;
+      try {
+        const info = await yt.getBasicInfo(id);
+        title = info.basic_info?.title ?? id;
+      } catch {
+        /* keep fallback title = id */
+      }
+      out[i] = {
+        id,
+        title,
+        views: "",
+        published: "",
+        url: `https://www.youtube.com/watch?v=${id}`,
+      };
+    }
+  }
+  await Promise.all(
+    Array.from({ length: Math.min(CONCURRENCY, ids.length) }, worker)
+  );
+  return out;
+}
+
 export async function POST(req: Request) {
   if (!checkPassword(req)) return unauthorized();
 
   try {
     const body = await req.json();
+
+    // "IDs mode": the caller pasted specific video URLs (parsed to ids on the
+    // client). Look up their titles and return the same shape as a channel
+    // fetch, so the frontend checklist + download flow are unchanged.
+    if (Array.isArray(body.ids) && body.ids.length) {
+      const ids = [
+        ...new Set(
+          (body.ids as any[]).filter(
+            (id) => typeof id === "string" && /^[\w-]{11}$/.test(id)
+          )
+        ),
+      ].slice(0, 100) as string[];
+      if (!ids.length) {
+        return Response.json(
+          { error: "No valid video URLs found" },
+          { status: 400 }
+        );
+      }
+      const yt = await createInnertube();
+      const videos = await videosForIds(yt, ids);
+      return Response.json({
+        channel: { id: "urls", title: "Pasted videos" },
+        videos,
+      });
+    }
+
     const channelInput = String(body.channel ?? "").trim();
     const sort: SortMode = ["recent", "oldest", "most_viewed"].includes(body.sort)
       ? body.sort

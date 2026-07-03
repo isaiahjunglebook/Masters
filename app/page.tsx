@@ -26,6 +26,25 @@ const SORT_LABELS: Record<SortMode, string> = {
   most_viewed: "Most Viewed",
 };
 
+/** Pull YouTube video ids out of pasted text — watch?v=, youtu.be/, /shorts/,
+ *  /embed/, /live/, and bare 11-char ids. Deduped, original order preserved.
+ *  Best-effort: the server re-validates every id before use. */
+function extractVideoIds(text: string): string[] {
+  const ids: string[] = [];
+  const seen = new Set<string>();
+  const re =
+    /(?:v=|youtu\.be\/|\/shorts\/|\/embed\/|\/live\/)([\w-]{11})|(?<![\w-])([\w-]{11})(?![\w-])/g;
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(text))) {
+    const id = m[1] ?? m[2];
+    if (id && !seen.has(id)) {
+      seen.add(id);
+      ids.push(id);
+    }
+  }
+  return ids;
+}
+
 export default function Home() {
   // Password gate (kept in memory only — sent with every API call)
   const [password, setPassword] = useState("");
@@ -38,6 +57,10 @@ export default function Home() {
   const [sort, setSort] = useState<SortMode>("recent");
   const [count, setCount] = useState(10);
   const [customCount, setCustomCount] = useState("");
+
+  // Paste-URLs form
+  const [urlsText, setUrlsText] = useState("");
+  const [loadingUrls, setLoadingUrls] = useState(false);
 
   // Results
   const [channelTitle, setChannelTitle] = useState("");
@@ -92,6 +115,37 @@ export default function Home() {
       setError(err.message);
     } finally {
       setLoading(false);
+    }
+  }
+
+  async function fetchFromUrls(e: React.FormEvent) {
+    e.preventDefault();
+    const ids = extractVideoIds(urlsText);
+    if (!ids.length) {
+      setError("No video URLs found — paste full YouTube video links");
+      return;
+    }
+    setLoadingUrls(true);
+    setError("");
+    setSkipped([]);
+    setDownloadedCount(null);
+    setVideos([]);
+    try {
+      const res = await fetch("/api/videos", {
+        method: "POST",
+        headers: authHeaders,
+        body: JSON.stringify({ ids }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error ?? "Failed to fetch videos");
+      setChannelTitle(data.channel.title);
+      setVideos(data.videos);
+      // Everything selected by default
+      setSelected(new Set(data.videos.map((v: Video) => v.id)));
+    } catch (err: any) {
+      setError(err.message);
+    } finally {
+      setLoadingUrls(false);
     }
   }
 
@@ -269,6 +323,38 @@ export default function Home() {
           </div>
         </div>
         {error && !videos.length && <p className="error">{error}</p>}
+      </form>
+
+      <div className="or-divider">or</div>
+
+      <form className="panel" onSubmit={fetchFromUrls}>
+        <label htmlFor="urls">Paste video URLs</label>
+        <textarea
+          id="urls"
+          value={urlsText}
+          onChange={(e) => setUrlsText(e.target.value)}
+          placeholder={
+            "One per line — any format, from any channel:\n" +
+            "https://www.youtube.com/watch?v=…\n" +
+            "https://youtu.be/…\n" +
+            "https://www.youtube.com/shorts/…"
+          }
+        />
+        <div className="row" style={{ marginTop: 12 }}>
+          <button className="primary" disabled={loadingUrls || !urlsText.trim()}>
+            {loadingUrls ? (
+              <>
+                <span className="spinner" />
+                Fetching titles…
+              </>
+            ) : (
+              "Fetch from URLs"
+            )}
+          </button>
+          <span className="notice" style={{ marginTop: 0 }}>
+            Looks up each video&apos;s title, then you pick which to download.
+          </span>
+        </div>
       </form>
 
       {videos.length > 0 && (
