@@ -12,6 +12,7 @@
     "next": "^16.2.10",
     "react": "^19.2.7",
     "react-dom": "^19.2.7",
+    "undici": "^8.6.0",
     "youtubei.js": "^17.2.0"
   },
   "devDependencies": {

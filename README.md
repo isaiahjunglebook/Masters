@@ -15,9 +15,30 @@ from a YouTube channel as a zip of `.txt` transcripts.
 
 ## Environment variables
 
-| Variable        | Purpose                                  |
-| --------------- | ---------------------------------------- |
-| `PAGE_PASSWORD` | Shared password required to use the page |
+| Variable         | Required | Purpose                                                        |
+| ---------------- | -------- | -------------------------------------------------------------- |
+| `PAGE_PASSWORD`  | yes      | Shared password required to use the page                        |
+| `YOUTUBE_COOKIE` | no       | Logged-in youtube.com Cookie header — beats the bot wall (free) |
+| `PROXY_URL`      | no       | Residential proxy `http://user:pass@host:port` — beats the bot wall |
+
+### The YouTube bot wall
+
+YouTube blocks requests from cloud datacenter IPs (Vercel's included) with
+"Sign in to confirm you're not a bot" (`LOGIN_REQUIRED`). When that happens,
+caption downloads fail even though the videos clearly have captions. Two
+workarounds, either one is enough:
+
+- **`YOUTUBE_COOKIE` (free):** log into youtube.com in a desktop browser, open
+  DevTools → Network → click any youtube.com request → copy the full `Cookie`
+  request header value and paste it as the env var. Cookies expire every few
+  weeks/months (re-export when downloads start failing again). Automated use of
+  a logged-in session carries a small risk of Google flagging the account —
+  fine at personal volume, but be aware.
+- **`PROXY_URL` (a few $/mo):** a rotating *residential* proxy from a provider
+  like Webshare or Decodo (datacenter proxies won't help — they're blocked for
+  the same reason Vercel is). No account risk.
+
+Running locally (`npm run dev`) from a home connection usually needs neither.
 
 ## Local development
 

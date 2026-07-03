@@ -1,5 +1,5 @@
-import { Innertube } from "youtubei.js";
 import { checkPassword, unauthorized } from "@/lib/auth";
+import { createInnertube } from "@/lib/youtube";
 
 export const runtime = "nodejs";
 export const maxDuration = 60;
@@ -91,7 +91,7 @@ export async function POST(req: Request) {
       return Response.json({ error: "Enter a channel URL or handle" }, { status: 400 });
     }
 
-    const yt = await Innertube.create({ retrieve_player: false });
+    const yt = await createInnertube();
 
     // Resolve whatever was pasted to a channel id
     const target = normalizeChannelInput(channelInput);

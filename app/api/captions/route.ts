@@ -1,6 +1,6 @@
-import { Innertube } from "youtubei.js";
 import JSZip from "jszip";
 import { checkPassword, unauthorized } from "@/lib/auth";
+import { createInnertube, youtubeFetch } from "@/lib/youtube";
 
 export const runtime = "nodejs";
 // Caption fetching is deliberately slow (~2s/video to be polite to YouTube),
@@ -68,7 +68,7 @@ async function captionsFromTracks(
       tracks[0];
     const url =
       track.base_url + (track.base_url.includes("?") ? "&" : "?") + "fmt=json3";
-    const res = await fetch(url);
+    const res = await youtubeFetch(url);
     const body = await res.text();
     if (!res.ok || !body) {
       errors.push(`${label}: timedtext HTTP ${res.status}, ${body.length} bytes`);
@@ -168,7 +168,7 @@ export async function POST(req: Request) {
     return Response.json({ error: "No video IDs provided" }, { status: 400 });
   }
 
-  const yt = await Innertube.create({ retrieve_player: false });
+  const yt = await createInnertube();
   const zip = new JSZip();
   const skipped: Skipped[] = [];
   let successCount = 0;
