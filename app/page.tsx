@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 
 type SortMode = "recent" | "oldest" | "most_viewed";
 
@@ -46,11 +46,27 @@ function extractVideoIds(text: string): string[] {
 }
 
 export default function Home() {
-  // Password gate (kept in memory only — sent with every API call)
+  // Password gate (kept in memory only — sent with every API call). When no
+  // PAGE_PASSWORD is configured the app is open and this screen is skipped.
   const [password, setPassword] = useState("");
   const [unlocked, setUnlocked] = useState(false);
   const [authError, setAuthError] = useState("");
   const [checking, setChecking] = useState(false);
+  const [booting, setBooting] = useState(true);
+
+  // On load, ask the server whether a password is required. If not, unlock
+  // immediately so the user never sees the login screen.
+  useEffect(() => {
+    fetch("/api/auth")
+      .then((r) => r.json())
+      .then((d) => {
+        if (!d.required) setUnlocked(true);
+      })
+      .catch(() => {
+        /* leave gated; the unlock form still works as a fallback */
+      })
+      .finally(() => setBooting(false));
+  }, []);
 
   // Fetch form
   const [channel, setChannel] = useState("");
@@ -212,6 +228,10 @@ export default function Home() {
       setDownloading(false);
     }
   }
+
+  // Brief blank while we check whether a password is needed — avoids flashing
+  // the login screen before auto-unlocking on a passwordless (local) setup.
+  if (booting) return null;
 
   if (!unlocked) {
     return (

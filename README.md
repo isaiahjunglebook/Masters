@@ -3,8 +3,9 @@
 A private, single-user Next.js app for downloading auto-generated captions
 from a YouTube channel as a zip of `.txt` transcripts.
 
-- **No accounts, no OAuth, no API keys, no database.** A single shared password
-  (`PAGE_PASSWORD`) gates the page since it lives on a public URL.
+- **No accounts, no OAuth, no API keys, no database.** Runs open locally with
+  no login. An optional shared password (`PAGE_PASSWORD`) can gate the page if
+  you deploy it to a public URL.
 - **`/api/videos`** — resolves a channel handle/URL and lists its videos using
   [youtubei.js](https://github.com/LuanRT/YouTube.js) (YouTube's internal API,
   no key needed). Sorting (recent / oldest / most viewed) uses the channel
@@ -17,7 +18,7 @@ from a YouTube channel as a zip of `.txt` transcripts.
 
 | Variable         | Required | Purpose                                                        |
 | ---------------- | -------- | -------------------------------------------------------------- |
-| `PAGE_PASSWORD`  | yes      | Shared password required to use the page                        |
+| `PAGE_PASSWORD`  | no       | Optional password to gate a public deployment; unset = open     |
 | `YOUTUBE_COOKIE` | no       | Logged-in youtube.com Cookie header — beats the bot wall (free) |
 | `PROXY_URL`      | no       | Residential proxy `http://user:pass@host:port` — beats the bot wall |
 
@@ -44,11 +45,12 @@ Running locally (`npm run dev`) from a home connection usually needs neither.
 
 ```bash
 npm install
-cp .env.local.example .env.local   # then set your password
 npm run dev
 ```
 
-Open http://localhost:3000, enter your `PAGE_PASSWORD`, paste a channel URL.
+Open http://localhost:3000 and paste a channel URL — no password needed
+locally. (To gate the page, copy `.env.local.example` to `.env.local` and set
+`PAGE_PASSWORD`.)
 
 ## Deploying to Vercel
 
@@ -56,7 +58,8 @@ Open http://localhost:3000, enter your `PAGE_PASSWORD`, paste a channel URL.
 2. In the [Vercel dashboard](https://vercel.com/dashboard) click
    **Add New… → Project**, import the repo. Vercel auto-detects Next.js —
    don't change build settings.
-3. Under **Environment Variables** add `PAGE_PASSWORD` (all environments).
+3. (Optional but recommended for a public URL) Under **Environment Variables**
+   add `PAGE_PASSWORD` (all environments) to gate the page.
 4. **Deploy**. Every push to the production branch redeploys automatically;
    pushes to other branches create preview URLs.
 
