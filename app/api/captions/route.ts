@@ -1,7 +1,14 @@
 import JSZip from "jszip";
 import { checkPassword, unauthorized } from "@/lib/auth";
 import { createInnertube } from "@/lib/youtube";
-import { fetchTranscript, safeFilename, transcriptFile } from "@/lib/captions";
+import {
+  fetchTranscript,
+  indexCsv,
+  safeFilename,
+  transcriptFile,
+  INDEX_FILENAME,
+  type VideoMeta,
+} from "@/lib/captions";
 
 export const runtime = "nodejs";
 // Caption fetching is deliberately slow (~2s/video to be polite to YouTube),
@@ -43,16 +50,16 @@ export async function POST(req: Request) {
   const yt = await createInnertube();
   const zip = new JSZip();
   const skipped: Skipped[] = [];
+  const index: { meta: VideoMeta; file: string; chars: number }[] = [];
   let successCount = 0;
 
   for (let i = 0; i < requested.length; i++) {
     const { id, title: providedTitle } = requested[i];
     try {
-      const { title, text, published } = await fetchTranscript(yt, id, providedTitle);
-      zip.file(
-        safeFilename(title, id, published),
-        transcriptFile(title, id, text, published)
-      );
+      const { meta, text } = await fetchTranscript(yt, id, providedTitle);
+      const file = safeFilename(meta.title, id, meta.published);
+      zip.file(file, transcriptFile(meta, text));
+      index.push({ meta, file, chars: text.length });
       successCount++;
     } catch (err: any) {
       // Report the real error text (trimmed) — masking it behind a friendly
@@ -73,6 +80,10 @@ export async function POST(req: Request) {
       { status: 422 }
     );
   }
+
+  // Machine-readable manifest: one row per transcript, for joining against
+  // other time series (price data, etc.) without re-parsing the .txt files.
+  zip.file(INDEX_FILENAME, indexCsv(index));
 
   if (skipped.length) {
     zip.file(
