@@ -1,4 +1,3 @@
-import { JSDOM } from "jsdom";
 import { BotGuardClient, getChallenge } from "bgutils-js/botguard";
 import { WebPoMinter } from "bgutils-js/webpo";
 import { buildURL, getHeaders } from "bgutils-js/utils";
@@ -37,6 +36,10 @@ export async function mintWebPoToken(
     throw new Error("BotGuard challenge did not include an interpreter script");
   }
 
+  // Import jsdom lazily: if it ever fails to load in the deployed runtime,
+  // only PO token minting is lost (caller falls back gracefully) instead of
+  // the import crashing every API route at startup.
+  const { JSDOM } = await import("jsdom");
   const dom = new JSDOM(
     '<!DOCTYPE html><html lang="en"><head><title></title></head><body></body></html>',
     {
