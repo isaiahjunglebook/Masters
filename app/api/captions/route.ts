@@ -178,7 +178,7 @@ async function fetchTranscript(
     errors.push(`getInfo: ${err?.message ?? "unknown error"}`);
   }
 
-  for (const client of ["ANDROID", "TV"]) {
+  for (const client of ["ANDROID", "IOS", "TV", "WEB_EMBEDDED"] as const) {
     try {
       const info = await yt.getBasicInfo(id, { client });
       title = info.basic_info?.title ?? title;
@@ -189,7 +189,24 @@ async function fetchTranscript(
     }
   }
 
-  throw new Error(errors.join(" | "));
+  // Lead with a plain-English diagnosis for the two failure modes that keep
+  // coming up, so the skip reason says what's wrong AND what to do about it.
+  const detail = errors.join(" | ");
+  if (/members[- ]only|Join this channel/i.test(detail)) {
+    throw new Error(
+      `Members-only video — YouTube only serves it (and its captions) to paying ` +
+        `channel members, so it can't be downloaded. Details: ${detail}`
+    );
+  }
+  if (/LOGIN_REQUIRED|not a bot/i.test(detail)) {
+    throw new Error(
+      `YouTube's bot wall is blocking this server's IP (every client got ` +
+        `"confirm you're not a bot"). Fix: set the YOUTUBE_COOKIE or PROXY_URL ` +
+        `environment variable and redeploy — see the README's "bot wall" section. ` +
+        `Details: ${detail}`
+    );
+  }
+  throw new Error(detail);
 }
 
 function safeFilename(title: string, id: string): string {
