@@ -116,6 +116,30 @@ async function captionsFromTracks(
   }
 }
 
+/** Absolute publish date as YYYY-MM-DD, or null when YouTube didn't give one.
+ *  The channel listing only carries relative dates ("3 weeks ago"), which are
+ *  useless for sorting or analysis, so read the player response's microformat
+ *  instead and fall back to the watch page's own "Published" text. */
+function publishedDate(info: any): string | null {
+  const iso = info?.page?.[0]?.microformat?.publish_date;
+  if (typeof iso === "string") {
+    // Usually "2025-08-03", occasionally with a time/offset appended.
+    const match = iso.match(/^(\d{4})-(\d{2})-(\d{2})/);
+    if (match) return `${match[1]}-${match[2]}-${match[3]}`;
+  }
+
+  const candidates = [
+    info?.primary_info?.published?.text,
+    info?.basic_info?.start_timestamp,
+  ];
+  for (const candidate of candidates) {
+    if (!candidate) continue;
+    const ms = candidate instanceof Date ? candidate.getTime() : Date.parse(candidate);
+    if (!Number.isNaN(ms)) return new Date(ms).toISOString().slice(0, 10);
+  }
+  return null;
+}
+
 /**
  * Fetch a video's transcript, trying progressively less-blocked routes:
  *  1. WEB client: transcript panel (what "Show transcript" uses), then the
@@ -128,13 +152,15 @@ export async function fetchTranscript(
   yt: any,
   id: string,
   providedTitle?: string
-): Promise<{ title: string; text: string }> {
+): Promise<{ title: string; text: string; published: string | null }> {
   const errors: string[] = [];
   let title = providedTitle ?? id;
+  let published: string | null = null;
 
   try {
     const info = await yt.getInfo(id);
     title = info.basic_info?.title ?? title;
+    published = publishedDate(info) ?? published;
 
     try {
       const transcriptInfo = await info.getTranscript();
@@ -143,14 +169,14 @@ export async function fetchTranscript(
       const text = cleanText(
         segments.map((seg: any) => seg?.snippet?.text?.toString() ?? "").join(" ")
       );
-      if (text) return { title, text };
+      if (text) return { title, text, published };
       errors.push(`transcript panel empty (${segments.length} segments)`);
     } catch (err: any) {
       errors.push(`transcript panel: ${err?.message ?? "unknown error"}`);
     }
 
     const text = await captionsFromTracks(info, "WEB", errors);
-    if (text) return { title, text };
+    if (text) return { title, text, published };
   } catch (err: any) {
     errors.push(`getInfo: ${err?.message ?? "unknown error"}`);
   }
@@ -159,8 +185,9 @@ export async function fetchTranscript(
     try {
       const info = await yt.getBasicInfo(id, { client });
       title = info.basic_info?.title ?? title;
+      published = publishedDate(info) ?? published;
       const text = await captionsFromTracks(info, client, errors);
-      if (text) return { title, text };
+      if (text) return { title, text, published };
     } catch (err: any) {
       errors.push(`${client}: ${err?.message ?? "unknown error"}`);
     }
@@ -197,21 +224,34 @@ export async function fetchTranscript(
   throw new Error(detail);
 }
 
-/** Filesystem-safe `<title> [<id>].txt`, short enough for any filesystem. */
-export function safeFilename(title: string, id: string): string {
+/** Filesystem-safe `<YYYY-MM-DD> <title> [<id>].txt`, short enough for any
+ *  filesystem. The date leads so the files sort chronologically by name; it's
+ *  omitted entirely when YouTube didn't report one, rather than inventing a
+ *  placeholder that would sort as if it were real. */
+export function safeFilename(
+  title: string,
+  id: string,
+  published?: string | null
+): string {
   const base = title
     .replace(/[<>:"/\\|?*]/g, "")
     .replace(/\s+/g, " ")
     .trim()
     .slice(0, 80);
-  return `${base || "video"} [${id}].txt`;
+  return `${published ? `${published} ` : ""}${base || "video"} [${id}].txt`;
 }
 
 /** The header block written above each transcript. */
-export function transcriptFile(title: string, id: string, text: string): string {
+export function transcriptFile(
+  title: string,
+  id: string,
+  text: string,
+  published?: string | null
+): string {
   return (
     [
       `Title: ${title}`,
+      `Published: ${published ?? "unknown"}`,
       `Video ID: ${id}`,
       `URL: https://www.youtube.com/watch?v=${id}`,
       "-".repeat(60),

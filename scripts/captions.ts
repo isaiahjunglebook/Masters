@@ -172,11 +172,22 @@ async function main() {
     const label = `[${i + 1}/${videos.length}]`;
     process.stdout.write(`${c.dim(label)} ${video.title.slice(0, 60)} … `);
     try {
-      const { title, text } = await fetchTranscript(yt, video.id, video.title);
-      const file = resolve(outDir, safeFilename(title, video.id));
-      await writeFile(file, transcriptFile(title, video.id, text), "utf8");
+      const { title, text, published } = await fetchTranscript(
+        yt,
+        video.id,
+        video.title
+      );
+      const file = resolve(outDir, safeFilename(title, video.id, published));
+      await writeFile(
+        file,
+        transcriptFile(title, video.id, text, published),
+        "utf8"
+      );
       saved++;
-      console.log(c.green(`saved (${text.length.toLocaleString()} chars)`));
+      console.log(
+        c.green(`saved`) +
+          c.dim(` ${published ?? "undated"} · ${text.length.toLocaleString()} chars`)
+      );
     } catch (err: any) {
       const reason = err?.message ?? "Unknown error";
       skipped.push({ title: video.title, reason });

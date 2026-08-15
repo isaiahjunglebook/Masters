@@ -48,8 +48,11 @@ export async function POST(req: Request) {
   for (let i = 0; i < requested.length; i++) {
     const { id, title: providedTitle } = requested[i];
     try {
-      const { title, text } = await fetchTranscript(yt, id, providedTitle);
-      zip.file(safeFilename(title, id), transcriptFile(title, id, text));
+      const { title, text, published } = await fetchTranscript(yt, id, providedTitle);
+      zip.file(
+        safeFilename(title, id, published),
+        transcriptFile(title, id, text, published)
+      );
       successCount++;
     } catch (err: any) {
       // Report the real error text (trimmed) — masking it behind a friendly
