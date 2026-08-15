@@ -199,11 +199,20 @@ async function fetchTranscript(
     );
   }
   if (/LOGIN_REQUIRED|not a bot/i.test(detail)) {
+    // Distinguish "no credentials configured" from "configured but rejected" —
+    // otherwise a stale cookie looks identical to no cookie at all.
+    const advice = process.env.YOUTUBE_COOKIE
+      ? `YOUTUBE_COOKIE is set but YouTube still rejected it, so the cookie is ` +
+        `expired or incomplete. Re-export it from a logged-in youtube.com tab ` +
+        `(copy the entire Cookie request header) and redeploy.`
+      : process.env.PROXY_URL
+        ? `PROXY_URL is set but its IP is blocked too — datacenter proxies don't ` +
+          `work here; use a residential one, or set YOUTUBE_COOKIE instead.`
+        : `Fix: set the YOUTUBE_COOKIE or PROXY_URL environment variable and ` +
+          `redeploy — see the README's "bot wall" section.`;
     throw new Error(
       `YouTube's bot wall is blocking this server's IP (every client got ` +
-        `"confirm you're not a bot"). Fix: set the YOUTUBE_COOKIE or PROXY_URL ` +
-        `environment variable and redeploy — see the README's "bot wall" section. ` +
-        `Details: ${detail}`
+        `"confirm you're not a bot"). ${advice} Details: ${detail}`
     );
   }
   throw new Error(detail);
