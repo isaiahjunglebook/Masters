@@ -12,7 +12,14 @@
 import { mkdir, writeFile } from "node:fs/promises";
 import { resolve } from "node:path";
 import { createInnertube } from "../lib/youtube";
-import { fetchTranscript, safeFilename, transcriptFile } from "../lib/captions";
+import {
+  fetchTranscript,
+  indexCsv,
+  safeFilename,
+  transcriptFile,
+  INDEX_FILENAME,
+  type VideoMeta,
+} from "../lib/captions";
 import {
   extractVideoIds,
   listChannelVideos,
@@ -47,7 +54,11 @@ Options:
   --count <n>    How many videos to take from the channel   (default 10, no max)
   --sort <mode>  recent | oldest | most_viewed              (default recent)
   --out <dir>    Where to write the .txt files              (default ./transcripts)
+  --timestamps   Keep [h:mm:ss] marks in the transcript text
   --help         Show this message
+
+Every run also writes ${INDEX_FILENAME} — one row per video (date, title,
+views, duration, url, filename) for loading into a spreadsheet or pandas.
 
 Examples:
   npm run captions -- "https://www.youtube.com/@veritasium"
@@ -60,6 +71,7 @@ interface Options {
   count: number;
   sort: SortMode;
   out: string;
+  timestamps: boolean;
 }
 
 /** Parse argv into options, erroring on anything malformed rather than
@@ -69,10 +81,15 @@ function parseArgs(argv: string[]): Options | null {
   let count = 10;
   let sort: SortMode = "recent";
   let out = "transcripts";
+  let timestamps = false;
 
   for (let i = 0; i < argv.length; i++) {
     const arg = argv[i];
     if (arg === "--help" || arg === "-h") return null;
+    if (arg === "--timestamps") {
+      timestamps = true;
+      continue;
+    }
     if (arg === "--count" || arg === "--sort" || arg === "--out") {
       const value = argv[++i];
       if (value === undefined) throw new Error(`${arg} needs a value`);
@@ -99,7 +116,7 @@ function parseArgs(argv: string[]): Options | null {
   }
 
   if (!inputs.length) return null;
-  return { inputs, count, sort, out };
+  return { inputs, count, sort, out, timestamps };
 }
 
 /** Resolve CLI inputs to the list of videos to download: either specific
@@ -165,6 +182,7 @@ async function main() {
   await mkdir(outDir, { recursive: true });
 
   const skipped: { title: string; reason: string }[] = [];
+  const index: { meta: VideoMeta; file: string; chars: number }[] = [];
   let saved = 0;
 
   for (let i = 0; i < videos.length; i++) {
@@ -172,21 +190,18 @@ async function main() {
     const label = `[${i + 1}/${videos.length}]`;
     process.stdout.write(`${c.dim(label)} ${video.title.slice(0, 60)} … `);
     try {
-      const { title, text, published } = await fetchTranscript(
-        yt,
-        video.id,
-        video.title
-      );
-      const file = resolve(outDir, safeFilename(title, video.id, published));
-      await writeFile(
-        file,
-        transcriptFile(title, video.id, text, published),
-        "utf8"
-      );
+      const { meta, text } = await fetchTranscript(yt, video.id, video.title, {
+        timestamps: opts.timestamps,
+      });
+      const name = safeFilename(meta.title, video.id, meta.published);
+      await writeFile(resolve(outDir, name), transcriptFile(meta, text), "utf8");
+      index.push({ meta, file: name, chars: text.length });
       saved++;
       console.log(
         c.green(`saved`) +
-          c.dim(` ${published ?? "undated"} · ${text.length.toLocaleString()} chars`)
+          c.dim(
+            ` ${meta.published ?? "undated"} · ${text.length.toLocaleString()} chars`
+          )
       );
     } catch (err: any) {
       const reason = err?.message ?? "Unknown error";
@@ -201,6 +216,10 @@ async function main() {
     }
   }
 
+  // Machine-readable manifest: one row per transcript, for joining against
+  // other time series (price data, etc.) without re-parsing the .txt files.
+  await writeFile(resolve(outDir, INDEX_FILENAME), indexCsv(index), "utf8");
+
   if (skipped.length) {
     await writeFile(
       resolve(outDir, "_skipped.txt"),
@@ -212,7 +231,8 @@ async function main() {
   console.log(
     `\n${c.bold("Done.")} ${c.green(`${saved} saved`)}` +
       (skipped.length ? `, ${c.yellow(`${skipped.length} skipped`)}` : "") +
-      `\n${c.dim(outDir)}`
+      `\n${c.dim(outDir)}` +
+      `\n${c.dim(`Index: ${resolve(outDir, INDEX_FILENAME)}`)}`
   );
   if (skipped.length) {
     console.log(c.dim(`Reasons: ${resolve(outDir, "_skipped.txt")}`));

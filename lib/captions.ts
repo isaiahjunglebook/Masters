@@ -1,5 +1,39 @@
 import { youtubeFetch, cookieProblem } from "./youtube";
 
+/** One caption cue: when it was said (seconds into the video) and what. */
+export interface Segment {
+  start: number;
+  text: string;
+}
+
+/** Everything worth knowing about a video besides its words. Kept flat and
+ *  primitive so it drops straight into a CSV row or a DataFrame. */
+export interface VideoMeta {
+  id: string;
+  title: string;
+  /** Calendar date, YYYY-MM-DD. */
+  published: string | null;
+  /** Full ISO timestamp when YouTube reports one — for a livestream this is
+   *  when it started, which is when the calls were actually made. */
+  published_at: string | null;
+  duration_seconds: number | null;
+  view_count: number | null;
+  like_count: number | null;
+  channel: string | null;
+  channel_id: string | null;
+  /** True for anything that was ever a livestream (they behave differently:
+   *  the publish time is the start, and calls are spread across hours). */
+  is_live_content: boolean | null;
+  description: string | null;
+}
+
+export interface TranscriptResult {
+  meta: VideoMeta;
+  segments: Segment[];
+  /** Plain prose, or timestamped lines when `timestamps` was requested. */
+  text: string;
+}
+
 /** Clean prose out of raw caption text: no timestamps, no [Music]-style
  *  tags, wrapped at ~100 chars so the .txt is readable. */
 export function cleanText(joined: string): string {
@@ -23,6 +57,45 @@ export function cleanText(joined: string): string {
   return lines.join("\n");
 }
 
+/** `[H:MM:SS]` for a position in a video. Hours are included only when the
+ *  video is long enough to need them, so short videos stay readable. */
+function stamp(seconds: number, withHours: boolean): string {
+  const s = Math.max(0, Math.floor(seconds));
+  const hh = Math.floor(s / 3600);
+  const mm = Math.floor((s % 3600) / 60);
+  const ss = s % 60;
+  const pad = (n: number) => String(n).padStart(2, "0");
+  return withHours ? `${hh}:${pad(mm)}:${pad(ss)}` : `${mm}:${pad(ss)}`;
+}
+
+/** Render segments as timestamped lines. Auto-captions arrive as hundreds of
+ *  ~2-second fragments, so merge them into readable chunks (~30s or ~300
+ *  chars) and stamp each chunk with the time its first word was said. */
+export function timestampedText(segments: Segment[]): string {
+  const CHUNK_SECONDS = 30;
+  const CHUNK_CHARS = 300;
+  const withHours = (segments.at(-1)?.start ?? 0) >= 3600;
+
+  const lines: string[] = [];
+  let start: number | null = null;
+  let buffer = "";
+
+  const flush = () => {
+    const text = buffer.replace(/\[[^\]]*\]/g, " ").replace(/\s+/g, " ").trim();
+    if (text && start !== null) lines.push(`[${stamp(start, withHours)}] ${text}`);
+    buffer = "";
+    start = null;
+  };
+
+  for (const seg of segments) {
+    if (start === null) start = seg.start;
+    buffer = buffer ? `${buffer} ${seg.text}` : seg.text;
+    if (seg.start - start >= CHUNK_SECONDS || buffer.length >= CHUNK_CHARS) flush();
+  }
+  flush();
+  return lines.join("\n");
+}
+
 /** Decode the handful of XML/HTML entities that appear in timedtext captions
  *  (and strip any inline formatting tags). `&amp;` is decoded last so an
  *  entity like `&amp;#39;` doesn't get half-decoded into a broken sequence. */
@@ -38,45 +111,60 @@ function decodeEntities(s: string): string {
     .replace(/&amp;/g, "&");
 }
 
-/** Parse a timedtext caption body into plain text. YouTube serves several
+/** Parse a timedtext caption body into timed segments. YouTube serves several
  *  shapes depending on the client/URL, and the ANDROID/TV clients often return
  *  XML even when json3 is requested, so we detect the shape rather than assume:
- *    - json3: an events/segs tree
- *    - srv1:  <transcript><text start=…>escaped words</text></transcript>
- *    - srv3:  <timedtext><body><p t=… d=…>…<s>word</s></p></body></timedtext>
- *  Returns "" if nothing recognizable is found (caller reports a diagnostic). */
-function parseTimedtext(body: string): string {
+ *    - json3: an events/segs tree, times in ms
+ *    - srv1:  <transcript><text start=…>escaped words</text></transcript>, seconds
+ *    - srv3:  <timedtext><body><p t=… d=…>…<s>word</s></p></body></timedtext>, ms
+ *  Returns [] if nothing recognizable is found (caller reports a diagnostic). */
+function parseTimedtext(body: string): Segment[] {
   if (body.trimStart().startsWith("{")) {
     const data = JSON.parse(body);
-    return cleanText(
-      (data.events ?? [])
-        .flatMap((ev: any) => ev.segs ?? [])
-        .map((seg: any) => seg.utf8 ?? "")
-        .join(" ")
-    );
+    return (data.events ?? [])
+      .map((ev: any) => ({
+        start: (ev.tStartMs ?? 0) / 1000,
+        text: (ev.segs ?? []).map((seg: any) => seg.utf8 ?? "").join(""),
+      }))
+      .filter((s: Segment) => s.text.trim());
   }
-  // srv1: text lives directly inside <text> elements.
-  const textEls = [...body.matchAll(/<text[^>]*>([\s\S]*?)<\/text>/g)];
+
+  // srv1: text lives directly inside <text> elements, start in seconds.
+  const textEls = [...body.matchAll(/<text[^>]*\bstart="([\d.]+)"[^>]*>([\s\S]*?)<\/text>/g)];
   if (textEls.length) {
-    return cleanText(textEls.map((m) => decodeEntities(m[1])).join(" "));
+    return textEls
+      .map((m) => ({ start: Number(m[1]) || 0, text: decodeEntities(m[2]) }))
+      .filter((s) => s.text.trim());
   }
+
   // srv3: text lives inside <p> elements, sometimes split across per-word <s>
   // segments. Strip the <s> tags with NO space so segments rejoin with their
   // own spacing (auto-captions split some words across <s> for timing).
-  const paragraphs = [...body.matchAll(/<p[^>]*>([\s\S]*?)<\/p>/g)].map((m) =>
-    decodeEntities(m[1].replace(/<\/?s\b[^>]*>/g, ""))
-  );
-  return cleanText(paragraphs.join(" "));
+  const paragraphs = [...body.matchAll(/<p[^>]*\bt="(\d+)"[^>]*>([\s\S]*?)<\/p>/g)];
+  if (paragraphs.length) {
+    return paragraphs
+      .map((m) => ({
+        start: Number(m[1]) / 1000 || 0,
+        text: decodeEntities(m[2].replace(/<\/?s\b[^>]*>/g, "")),
+      }))
+      .filter((s) => s.text.trim());
+  }
+
+  // Untimed fallback: <text>/<p> without parseable timing still beats nothing.
+  const untimed = [...body.matchAll(/<(?:text|p)[^>]*>([\s\S]*?)<\/(?:text|p)>/g)];
+  return untimed
+    .map((m) => ({ start: 0, text: decodeEntities(m[1].replace(/<\/?s\b[^>]*>/g, "")) }))
+    .filter((s) => s.text.trim());
 }
 
 /** Download and parse the caption-track file (timedtext) from a player
- *  response, preferring the auto-generated English track. Returns clean text,
+ *  response, preferring the auto-generated English track. Returns segments,
  *  or null after pushing a diagnostic onto `errors`. */
 async function captionsFromTracks(
   info: any,
   label: string,
   errors: string[]
-): Promise<string | null> {
+): Promise<Segment[] | null> {
   try {
     const tracks: any[] = info.captions?.caption_tracks ?? [];
     if (!tracks.length) {
@@ -103,8 +191,8 @@ async function captionsFromTracks(
       errors.push(`${label}: timedtext HTTP ${res.status}, ${body.length} bytes`);
       return null;
     }
-    const text = parseTimedtext(body);
-    if (text) return text;
+    const segments = parseTimedtext(body);
+    if (segments.length) return segments;
     // Surface the start of the raw body so an unrecognized format is
     // diagnosable from the skip reason without another round-trip.
     const snippet = body.replace(/\s+/g, " ").trim().slice(0, 200);
@@ -116,28 +204,77 @@ async function captionsFromTracks(
   }
 }
 
-/** Absolute publish date as YYYY-MM-DD, or null when YouTube didn't give one.
- *  The channel listing only carries relative dates ("3 weeks ago"), which are
- *  useless for sorting or analysis, so read the player response's microformat
- *  instead and fall back to the watch page's own "Published" text. */
-function publishedDate(info: any): string | null {
-  const iso = info?.page?.[0]?.microformat?.publish_date;
-  if (typeof iso === "string") {
-    // Usually "2025-08-03", occasionally with a time/offset appended.
-    const match = iso.match(/^(\d{4})-(\d{2})-(\d{2})/);
-    if (match) return `${match[1]}-${match[2]}-${match[3]}`;
+/** Absolute publish date/time. The channel listing only carries relative dates
+ *  ("3 weeks ago"), which are useless for sorting or backtesting, so read the
+ *  player response's microformat and fall back to the watch page's own
+ *  "Published" text. For livestreams `start_timestamp` is the real moment. */
+function publishedFrom(info: any): { date: string | null; at: string | null } {
+  const mf = info?.page?.[0]?.microformat;
+  const start = info?.basic_info?.start_timestamp;
+
+  // A livestream's start beats the calendar publish date: it's when the words
+  // were actually spoken, which is what a backtest needs to line up.
+  if (start instanceof Date && !Number.isNaN(start.getTime())) {
+    return { date: start.toISOString().slice(0, 10), at: start.toISOString() };
   }
 
-  const candidates = [
-    info?.primary_info?.published?.text,
-    info?.basic_info?.start_timestamp,
-  ];
-  for (const candidate of candidates) {
-    if (!candidate) continue;
-    const ms = candidate instanceof Date ? candidate.getTime() : Date.parse(candidate);
-    if (!Number.isNaN(ms)) return new Date(ms).toISOString().slice(0, 10);
+  const raw = mf?.publish_date ?? mf?.upload_date;
+  if (typeof raw === "string") {
+    // Usually "2025-08-03", sometimes with a time and UTC offset appended.
+    const ms = Date.parse(raw);
+    const hasTime = /\d{2}:\d{2}/.test(raw);
+    const dateMatch = raw.match(/^(\d{4}-\d{2}-\d{2})/);
+    if (dateMatch) {
+      return {
+        date: dateMatch[1],
+        at: hasTime && !Number.isNaN(ms) ? new Date(ms).toISOString() : null,
+      };
+    }
   }
-  return null;
+
+  const text = info?.primary_info?.published?.text;
+  if (text) {
+    const ms = Date.parse(text);
+    if (!Number.isNaN(ms)) {
+      return { date: new Date(ms).toISOString().slice(0, 10), at: null };
+    }
+  }
+  return { date: null, at: null };
+}
+
+/** Pull the flat metadata record out of whatever player response we got. */
+function metaFrom(info: any, id: string, fallbackTitle: string): VideoMeta {
+  const basic = info?.basic_info ?? {};
+  const { date, at } = publishedFrom(info);
+  const num = (v: any): number | null =>
+    typeof v === "number" && Number.isFinite(v) ? v : null;
+  return {
+    id,
+    title: basic.title ?? fallbackTitle,
+    published: date,
+    published_at: at,
+    duration_seconds: num(basic.duration),
+    view_count: num(basic.view_count),
+    like_count: num(basic.like_count),
+    channel: basic.author ?? basic.channel?.name ?? null,
+    channel_id: basic.channel_id ?? basic.channel?.id ?? null,
+    is_live_content:
+      typeof basic.is_live_content === "boolean" ? basic.is_live_content : null,
+    description: basic.short_description ?? null,
+  };
+}
+
+/** Keep whichever metadata record is richer — later clients (ANDROID, TV) can
+ *  fill gaps the WEB response left blank, but must not blank out what we have. */
+function mergeMeta(base: VideoMeta, next: VideoMeta): VideoMeta {
+  const out = { ...base };
+  for (const key of Object.keys(next) as (keyof VideoMeta)[]) {
+    const value = next[key];
+    if (out[key] === null || out[key] === undefined) {
+      (out as any)[key] = value;
+    }
+  }
+  return out;
 }
 
 /**
@@ -151,32 +288,55 @@ function publishedDate(info: any): string | null {
 export async function fetchTranscript(
   yt: any,
   id: string,
-  providedTitle?: string
-): Promise<{ title: string; text: string; published: string | null }> {
+  providedTitle?: string,
+  options: { timestamps?: boolean } = {}
+): Promise<TranscriptResult> {
   const errors: string[] = [];
-  let title = providedTitle ?? id;
-  let published: string | null = null;
+  const fallbackTitle = providedTitle ?? id;
+  let meta: VideoMeta = {
+    id,
+    title: fallbackTitle,
+    published: null,
+    published_at: null,
+    duration_seconds: null,
+    view_count: null,
+    like_count: null,
+    channel: null,
+    channel_id: null,
+    is_live_content: null,
+    description: null,
+  };
+
+  const render = (segments: Segment[]): TranscriptResult => ({
+    meta,
+    segments,
+    text: options.timestamps
+      ? timestampedText(segments)
+      : cleanText(segments.map((s) => s.text).join(" ")),
+  });
 
   try {
     const info = await yt.getInfo(id);
-    title = info.basic_info?.title ?? title;
-    published = publishedDate(info) ?? published;
+    meta = mergeMeta(metaFrom(info, id, fallbackTitle), meta);
 
     try {
       const transcriptInfo = await info.getTranscript();
-      const segments =
+      const initial =
         transcriptInfo?.transcript?.content?.body?.initial_segments ?? [];
-      const text = cleanText(
-        segments.map((seg: any) => seg?.snippet?.text?.toString() ?? "").join(" ")
-      );
-      if (text) return { title, text, published };
-      errors.push(`transcript panel empty (${segments.length} segments)`);
+      const segments: Segment[] = initial
+        .map((seg: any) => ({
+          start: Number(seg?.start_ms ?? 0) / 1000 || 0,
+          text: seg?.snippet?.text?.toString() ?? "",
+        }))
+        .filter((s: Segment) => s.text.trim());
+      if (segments.length) return render(segments);
+      errors.push(`transcript panel empty (${initial.length} segments)`);
     } catch (err: any) {
       errors.push(`transcript panel: ${err?.message ?? "unknown error"}`);
     }
 
-    const text = await captionsFromTracks(info, "WEB", errors);
-    if (text) return { title, text, published };
+    const segments = await captionsFromTracks(info, "WEB", errors);
+    if (segments) return render(segments);
   } catch (err: any) {
     errors.push(`getInfo: ${err?.message ?? "unknown error"}`);
   }
@@ -184,10 +344,9 @@ export async function fetchTranscript(
   for (const client of ["ANDROID", "IOS", "TV", "WEB_EMBEDDED"] as const) {
     try {
       const info = await yt.getBasicInfo(id, { client });
-      title = info.basic_info?.title ?? title;
-      published = publishedDate(info) ?? published;
-      const text = await captionsFromTracks(info, client, errors);
-      if (text) return { title, text, published };
+      meta = mergeMeta(meta, metaFrom(info, id, fallbackTitle));
+      const segments = await captionsFromTracks(info, client, errors);
+      if (segments) return render(segments);
     } catch (err: any) {
       errors.push(`${client}: ${err?.message ?? "unknown error"}`);
     }
@@ -241,23 +400,82 @@ export function safeFilename(
   return `${published ? `${published} ` : ""}${base || "video"} [${id}].txt`;
 }
 
-/** The header block written above each transcript. */
-export function transcriptFile(
-  title: string,
-  id: string,
-  text: string,
-  published?: string | null
+/** One transcript file: a metadata header, the description, then the words.
+ *  Sections are delimited so a script can split the file without guessing. */
+export function transcriptFile(meta: VideoMeta, text: string): string {
+  const rule = "-".repeat(60);
+  const header = [
+    `Title: ${meta.title}`,
+    `Channel: ${meta.channel ?? "unknown"}`,
+    `Published: ${meta.published ?? "unknown"}`,
+    `Published at: ${meta.published_at ?? "unknown"}`,
+    `Duration (s): ${meta.duration_seconds ?? "unknown"}`,
+    `Views: ${meta.view_count ?? "unknown"}`,
+    `Livestream: ${meta.is_live_content === null ? "unknown" : meta.is_live_content}`,
+    `Video ID: ${meta.id}`,
+    `URL: https://www.youtube.com/watch?v=${meta.id}`,
+  ].join("\n");
+
+  const description = meta.description?.trim()
+    ? `${rule}\n--- DESCRIPTION ---\n${meta.description.trim()}\n`
+    : "";
+
+  return `${header}\n${description}${rule}\n--- TRANSCRIPT ---\n${text}\n`;
+}
+
+/** RFC-4180 CSV cell: quote when the value could otherwise break the row. */
+function csvCell(value: unknown): string {
+  if (value === null || value === undefined) return "";
+  const s = String(value);
+  return /[",\n\r]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
+}
+
+export const INDEX_FILENAME = "_index.csv";
+
+/** A one-row-per-video manifest: the file to load into pandas/Excel to join
+ *  transcripts against price data. Descriptions are excluded — they're in the
+ *  .txt files, and multi-paragraph cells make the CSV unreadable by eye. */
+export function indexCsv(
+  rows: { meta: VideoMeta; file: string; chars: number }[]
 ): string {
-  return (
-    [
-      `Title: ${title}`,
-      `Published: ${published ?? "unknown"}`,
-      `Video ID: ${id}`,
-      `URL: https://www.youtube.com/watch?v=${id}`,
-      "-".repeat(60),
-      "",
-    ].join("\n") +
-    text +
-    "\n"
+  const columns = [
+    "published",
+    "published_at",
+    "title",
+    "channel",
+    "video_id",
+    "url",
+    "duration_seconds",
+    "view_count",
+    "like_count",
+    "is_live_content",
+    "transcript_chars",
+    "transcript_file",
+  ];
+  const lines = [columns.join(",")];
+  // Chronological, so the CSV reads as a timeline out of the box.
+  const sorted = [...rows].sort((a, b) =>
+    (a.meta.published ?? "").localeCompare(b.meta.published ?? "")
   );
+  for (const { meta, file, chars } of sorted) {
+    lines.push(
+      [
+        meta.published,
+        meta.published_at,
+        meta.title,
+        meta.channel,
+        meta.id,
+        `https://www.youtube.com/watch?v=${meta.id}`,
+        meta.duration_seconds,
+        meta.view_count,
+        meta.like_count,
+        meta.is_live_content,
+        chars,
+        file,
+      ]
+        .map(csvCell)
+        .join(",")
+    );
+  }
+  return lines.join("\n") + "\n";
 }
