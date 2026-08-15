@@ -1,6 +1,6 @@
 import JSZip from "jszip";
 import { checkPassword, unauthorized } from "@/lib/auth";
-import { createInnertube, youtubeFetch } from "@/lib/youtube";
+import { cookieProblem, createInnertube, youtubeFetch } from "@/lib/youtube";
 
 export const runtime = "nodejs";
 // Caption fetching is deliberately slow (~2s/video to be polite to YouTube),
@@ -202,9 +202,10 @@ async function fetchTranscript(
     // Distinguish "no credentials configured" from "configured but rejected" —
     // otherwise a stale cookie looks identical to no cookie at all.
     const advice = process.env.YOUTUBE_COOKIE
-      ? `YOUTUBE_COOKIE is set but YouTube still rejected it, so the cookie is ` +
-        `expired or incomplete. Re-export it from a logged-in youtube.com tab ` +
-        `(copy the entire Cookie request header) and redeploy.`
+      ? (cookieProblem() ??
+          `YOUTUBE_COOKIE is set but YouTube still rejected it, so the cookie is ` +
+          `expired. Re-export it from a logged-in youtube.com tab (copy the ` +
+          `entire Cookie request header) and redeploy.`)
       : process.env.PROXY_URL
         ? `PROXY_URL is set but its IP is blocked too — datacenter proxies don't ` +
           `work here; use a residential one, or set YOUTUBE_COOKIE instead.`
