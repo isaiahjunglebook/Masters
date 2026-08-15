@@ -9,7 +9,7 @@
  * Writes one .txt per video into ./transcripts (override with --out).
  * Same engine as the web app — just without the browser.
  */
-import { mkdir, writeFile } from "node:fs/promises";
+import { mkdir, readdir, writeFile } from "node:fs/promises";
 import { resolve } from "node:path";
 import { createInnertube } from "../lib/youtube";
 import {
@@ -55,7 +55,11 @@ Options:
   --sort <mode>  recent | oldest | most_viewed              (default recent)
   --out <dir>    Where to write the .txt files              (default ./transcripts)
   --timestamps   Keep [h:mm:ss] marks in the transcript text
+  --force        Re-download videos already in the folder (default: skip them)
   --help         Show this message
+
+Re-running the same command only fetches videos you don't already have, so
+pointing it at one folder builds up that creator's archive over time.
 
 Every run also writes ${INDEX_FILENAME} — one row per video (date, title,
 views, duration, url, filename) for loading into a spreadsheet or pandas.
@@ -72,6 +76,8 @@ interface Options {
   sort: SortMode;
   out: string;
   timestamps: boolean;
+  /** Re-download videos already present in the output folder. */
+  force: boolean;
 }
 
 /** Parse argv into options, erroring on anything malformed rather than
@@ -82,12 +88,17 @@ function parseArgs(argv: string[]): Options | null {
   let sort: SortMode = "recent";
   let out = "transcripts";
   let timestamps = false;
+  let force = false;
 
   for (let i = 0; i < argv.length; i++) {
     const arg = argv[i];
     if (arg === "--help" || arg === "-h") return null;
     if (arg === "--timestamps") {
       timestamps = true;
+      continue;
+    }
+    if (arg === "--force") {
+      force = true;
       continue;
     }
     if (arg === "--count" || arg === "--sort" || arg === "--out") {
@@ -116,7 +127,7 @@ function parseArgs(argv: string[]): Options | null {
   }
 
   if (!inputs.length) return null;
-  return { inputs, count, sort, out, timestamps };
+  return { inputs, count, sort, out, timestamps, force };
 }
 
 /** Resolve CLI inputs to the list of videos to download: either specific
@@ -181,13 +192,38 @@ async function main() {
 
   await mkdir(outDir, { recursive: true });
 
+  // Every filename ends in [<video id>].txt, so the folder itself is the record
+  // of what's already downloaded — no state file to keep in sync, and it stays
+  // correct if you move or delete files by hand. Re-running the same command
+  // therefore only fetches what's new.
+  const alreadyHave = new Set<string>();
+  if (!opts.force) {
+    for (const name of await readdir(outDir)) {
+      const match = name.match(/\[([\w-]{11})\]\.txt$/);
+      if (match) alreadyHave.add(match[1]);
+    }
+  }
+  const pending = videos.filter((v) => !alreadyHave.has(v.id));
+  const existing = videos.length - pending.length;
+  if (existing) {
+    console.log(
+      c.dim(
+        `${existing} already in ${opts.out} — skipping (use --force to redo)\n`
+      )
+    );
+  }
+  if (!pending.length) {
+    console.log(c.green("Nothing new. Folder is up to date."));
+    return;
+  }
+
   const skipped: { title: string; reason: string }[] = [];
   const index: { meta: VideoMeta; file: string; chars: number }[] = [];
   let saved = 0;
 
-  for (let i = 0; i < videos.length; i++) {
-    const video = videos[i];
-    const label = `[${i + 1}/${videos.length}]`;
+  for (let i = 0; i < pending.length; i++) {
+    const video = pending[i];
+    const label = `[${i + 1}/${pending.length}]`;
     process.stdout.write(`${c.dim(label)} ${video.title.slice(0, 60)} … `);
     try {
       const { meta, text } = await fetchTranscript(yt, video.id, video.title, {
@@ -211,7 +247,7 @@ async function main() {
       console.log(c.yellow(`skipped — ${reason.split(" Details:")[0]}`));
     }
     // Be polite: pause between videos (but not after the last one)
-    if (i < videos.length - 1) {
+    if (i < pending.length - 1) {
       await sleep(DELAY_MS_MIN + Math.random() * DELAY_MS_JITTER);
     }
   }
