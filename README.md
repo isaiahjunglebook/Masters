@@ -29,6 +29,74 @@ npm run captions -- "https://youtu.be/VIDEO_ID" --out ~/Desktop/notes
 Transcripts land in `./transcripts` (one `.txt` per video). Anything skipped
 is explained in `transcripts/_skipped.txt`. Run `npm run captions -- --help`
 for all options.
+## Daily brief
+
+Whitelist the creators you follow, and one command scrapes them, archives every
+new video's transcript, and writes a summarized brief.
+
+```bash
+npm run dev          # add creators in the "Daily brief" tab at localhost:3000
+npm run daily        # scrape, archive, summarize, deliver
+npm run daily -- --since 3    # catch up after a few days away
+npm run daily -- --dry-run    # scrape and archive only, no summarizing
+```
+
+Everything lands in `./data`:
+
+| Path | What it is |
+| --- | --- |
+| `data/creators.json` | The whitelist |
+| `data/archive/<creator>/<date> <title> [id].txt` | Every transcript, kept permanently |
+| `data/seen.json` | What's been archived, and what has since disappeared |
+| `data/briefs/<date>.html` | The brief itself |
+
+Summarizing needs an [Anthropic API key](https://platform.claude.com) in
+`ANTHROPIC_API_KEY`. Without one, `--dry-run` still scrapes and archives.
+
+### Why the archive matters
+
+The scrape re-checks each channel every run, so a video that vanishes from a
+channel is recorded as gone (`missingSince`) while its transcript stays in your
+archive. That turns deletions into data: a creator who quietly removes bad
+calls is visible here and invisible to anyone analyzing the channel
+retroactively. It's also the reason to start scraping before you need the data.
+
+### Running it every morning (macOS)
+
+`launchd` wakes the job on a schedule. Save this as
+`~/Library/LaunchAgents/com.local.dailybrief.plist`, replacing the paths:
+
+```xml
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
+  "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>
+  <key>Label</key><string>com.local.dailybrief</string>
+  <key>WorkingDirectory</key><string>/Users/YOU/Masters-main</string>
+  <key>ProgramArguments</key>
+  <array><string>/usr/local/bin/npm</string><string>run</string><string>daily</string></array>
+  <key>StartCalendarInterval</key><dict><key>Hour</key><integer>6</integer><key>Minute</key><integer>30</integer></dict>
+  <key>EnvironmentVariables</key><dict>
+    <key>ANTHROPIC_API_KEY</key><string>sk-ant-…</string>
+    <key>PATH</key><string>/usr/local/bin:/usr/bin:/bin</string>
+  </dict>
+  <key>StandardOutPath</key><string>/tmp/dailybrief.log</string>
+  <key>StandardErrorPath</key><string>/tmp/dailybrief.err</string>
+</dict></plist>
+```
+
+Then `launchctl load ~/Library/LaunchAgents/com.local.dailybrief.plist`.
+
+A closed laptop just delays the run — `launchd` fires the job when the Mac next
+wakes, and `--since` covers any gap, so nothing is lost. To have the Mac wake
+itself: `sudo pmset repeat wakeorpoweron MTWRFSU 06:25:00`.
+
+### Emailing it
+
+Optional. Set `RESEND_API_KEY` (from [resend.com](https://resend.com), free tier
+is 100/day) and `BRIEF_TO`. Without them the brief is still written to
+`data/briefs/` — open it in a browser.
+
 ## How it works
 
 Shared engine, two front ends:
@@ -47,11 +115,16 @@ Both wait ~1.5–2s between videos to stay polite to YouTube.
 
 ## Environment variables
 
-| Variable         | Required | Purpose                                                        |
-| ---------------- | -------- | -------------------------------------------------------------- |
-| `PAGE_PASSWORD`  | no       | Optional password to gate a public deployment; unset = open     |
-| `YOUTUBE_COOKIE` | no       | Logged-in youtube.com Cookie header — beats the bot wall (free) |
-| `PROXY_URL`      | no       | Residential proxy `http://user:pass@host:port` — beats the bot wall |
+| Variable            | Required | Purpose                                                        |
+| ------------------- | -------- | -------------------------------------------------------------- |
+| `PAGE_PASSWORD`     | no       | Optional password to gate a public deployment; unset = open     |
+| `YOUTUBE_COOKIE`    | no       | Logged-in youtube.com Cookie header — beats the bot wall (free) |
+| `PROXY_URL`         | no       | Residential proxy `http://user:pass@host:port` — beats the bot wall |
+| `ANTHROPIC_API_KEY` | for briefs | Summarizes the daily brief (`npm run daily`)                 |
+| `RESEND_API_KEY`    | no       | Emails the brief; without it the HTML file is still written    |
+| `BRIEF_TO`          | no       | Where to send the brief                                        |
+| `BRIEF_FROM`        | no       | Sender address; defaults to Resend's shared onboarding sender  |
+| `DATA_DIR`          | no       | Where the archive lives; defaults to `./data`                   |
 
 ### The YouTube bot wall
 

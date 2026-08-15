@@ -10,3 +10,6 @@ next-env.d.ts
 
 # CLI output
 /transcripts
+
+# Daily brief archive (transcripts, seen index, generated briefs)
+/data

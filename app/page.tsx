@@ -18,6 +18,17 @@ interface Skipped {
   reason: string;
 }
 
+interface Creator {
+  id: string;
+  name: string;
+  input: string;
+  channelId: string | null;
+  addedAt: string;
+  lastError?: string;
+}
+
+type Tab = "download" | "creators";
+
 const COUNT_PRESETS = [5, 10, 25, 50];
 
 const SORT_LABELS: Record<SortMode, string> = {
@@ -68,6 +79,16 @@ export default function Home() {
       .finally(() => setBooting(false));
   }, []);
 
+  // Tabs
+  const [tab, setTab] = useState<Tab>("download");
+
+  // Creators (daily brief whitelist)
+  const [creators, setCreators] = useState<Creator[]>([]);
+  const [creatorInput, setCreatorInput] = useState("");
+  const [creatorBusy, setCreatorBusy] = useState(false);
+  const [creatorError, setCreatorError] = useState("");
+  const [creatorNote, setCreatorNote] = useState("");
+
   // Fetch form
   const [channel, setChannel] = useState("");
   const [sort, setSort] = useState<SortMode>("recent");
@@ -105,6 +126,62 @@ export default function Home() {
       setAuthError("Network error — try again");
     } finally {
       setChecking(false);
+    }
+  }
+
+  // --- Creators tab (the daily brief's whitelist) -------------------------
+  async function loadCreators() {
+    setCreatorError("");
+    try {
+      const res = await fetch("/api/creators", { headers: authHeaders });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error ?? "Couldn't load creators");
+      setCreators(data.creators);
+    } catch (err: any) {
+      setCreatorError(err.message);
+    }
+  }
+
+  async function addCreator(e: React.FormEvent) {
+    e.preventDefault();
+    const input = creatorInput.trim();
+    if (!input) return;
+    setCreatorBusy(true);
+    setCreatorError("");
+    setCreatorNote("");
+    try {
+      const res = await fetch("/api/creators", {
+        method: "POST",
+        headers: authHeaders,
+        body: JSON.stringify({ input }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error ?? "Couldn't add that creator");
+      setCreators(data.creators);
+      setCreatorInput("");
+      setCreatorNote(
+        data.added ? `Added ${data.creator.name}` : "Already on the list"
+      );
+    } catch (err: any) {
+      setCreatorError(err.message);
+    } finally {
+      setCreatorBusy(false);
+    }
+  }
+
+  async function deleteCreator(id: string) {
+    setCreatorError("");
+    setCreatorNote("");
+    try {
+      const res = await fetch(`/api/creators?id=${encodeURIComponent(id)}`, {
+        method: "DELETE",
+        headers: authHeaders,
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error ?? "Couldn't remove that creator");
+      setCreators(data.creators);
+    } catch (err: any) {
+      setCreatorError(err.message);
     }
   }
 
@@ -270,6 +347,92 @@ export default function Home() {
         auto-generated captions as a zip.
       </p>
 
+      <div className="tabs">
+        <button
+          type="button"
+          className={tab === "download" ? "tab active" : "tab"}
+          onClick={() => setTab("download")}
+        >
+          Download
+        </button>
+        <button
+          type="button"
+          className={tab === "creators" ? "tab active" : "tab"}
+          onClick={() => {
+            setTab("creators");
+            loadCreators();
+          }}
+        >
+          Daily brief
+        </button>
+      </div>
+
+      {tab === "creators" && (
+        <>
+          <form className="panel" onSubmit={addCreator}>
+            <label htmlFor="creator">Add a creator to your daily brief</label>
+            <div className="row">
+              <input
+                id="creator"
+                type="text"
+                placeholder="https://www.youtube.com/@channel or @channel"
+                value={creatorInput}
+                onChange={(e) => setCreatorInput(e.target.value)}
+                style={{ flex: 1 }}
+              />
+              <button
+                className="primary"
+                disabled={creatorBusy || !creatorInput.trim()}
+              >
+                {creatorBusy ? <span className="spinner" /> : "Add"}
+              </button>
+            </div>
+            <p className="hint">
+              Every creator here gets checked when you run{" "}
+              <code>npm run daily</code>. New videos are transcribed, archived
+              permanently, and summarized into one brief.
+            </p>
+            {creatorNote && <p className="note">{creatorNote}</p>}
+            {creatorError && <p className="error">{creatorError}</p>}
+          </form>
+
+          <div className="panel">
+            <h3>
+              Watching {creators.length} creator
+              {creators.length === 1 ? "" : "s"}
+            </h3>
+            {creators.length === 0 ? (
+              <p className="hint">
+                Nobody yet. Add a channel above to start building an archive.
+              </p>
+            ) : (
+              <ul className="creator-list">
+                {creators.map((c) => (
+                  <li key={c.id}>
+                    <div>
+                      <strong>{c.name}</strong>
+                      {c.lastError && (
+                        <span className="badge-error">{c.lastError}</span>
+                      )}
+                      <div className="creator-input">{c.input}</div>
+                    </div>
+                    <button
+                      type="button"
+                      className="link-danger"
+                      onClick={() => deleteCreator(c.id)}
+                    >
+                      Remove
+                    </button>
+                  </li>
+                ))}
+              </ul>
+            )}
+          </div>
+        </>
+      )}
+
+      {tab === "download" && (
+      <>
       <form className="panel" onSubmit={fetchVideos}>
         <label htmlFor="channel">Channel URL or handle</label>
         <div className="row">
@@ -455,6 +618,8 @@ export default function Home() {
             ))}
           </ul>
         </div>
+      )}
+      </>
       )}
     </main>
   );
