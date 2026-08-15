@@ -25,8 +25,9 @@ import {
 } from "../lib/archive";
 import { summarizeDay, summarizeVideo, type Brief, type VideoSummary } from "../lib/brief";
 import { renderBriefHtml, renderBriefText } from "../lib/brief-html";
+import { buildBundle } from "../lib/bundle";
 import { mailConfigured, sendBrief } from "../lib/mail";
-import { BRIEFS_DIR, DATA_DIR } from "../lib/store";
+import { BRIEFS_DIR, BUNDLES_DIR, DATA_DIR } from "../lib/store";
 
 // How many recent videos to inspect per channel. Generous enough that a
 // channel posting several times a day is never missed, small enough to stay
@@ -48,14 +49,19 @@ const c = {
 interface Options {
   sinceDays: number;
   dryRun: boolean;
+  /** Force the zip-bundle path even when an API key is available. */
+  bundle: boolean;
 }
 
 function parseArgs(argv: string[]): Options {
   let sinceDays = 1;
   let dryRun = false;
+  let bundle = false;
   for (let i = 0; i < argv.length; i++) {
     if (argv[i] === "--dry-run") {
       dryRun = true;
+    } else if (argv[i] === "--bundle") {
+      bundle = true;
     } else if (argv[i] === "--since") {
       const n = Number(argv[++i]);
       if (!Number.isFinite(n) || n < 1) {
@@ -66,7 +72,7 @@ function parseArgs(argv: string[]): Options {
       throw new Error(`Unknown option "${argv[i]}"`);
     }
   }
-  return { sinceDays, dryRun };
+  return { sinceDays, dryRun, bundle };
 }
 
 /** A video counts as new if we've never archived it AND it published inside
@@ -115,6 +121,13 @@ async function main() {
     `${c.bold("Daily brief")} ${c.dim(date)} — ${creators.length} creator(s), ` +
       `looking back ${opts.sinceDays} day(s)\n`
   );
+
+  // Summarizing here needs an API key. Without one — the default — the run
+  // still scrapes and archives, and packs the day into a zip you hand to
+  // Claude yourself. The archive is the product; summarizing is a choice about
+  // where it happens.
+  const summarizeHere =
+    !opts.dryRun && !opts.bundle && Boolean(process.env.ANTHROPIC_API_KEY);
 
   const yt = await createInnertube();
   const seen = await readSeen();
@@ -197,7 +210,7 @@ async function main() {
       record.transcriptFile = await archiveTranscript(creator.id, meta, text);
       console.log(c.green(`archived`) + c.dim(` ${text.length.toLocaleString()} chars`));
 
-      if (!opts.dryRun) {
+      if (summarizeHere) {
         try {
           summaries.push(await summarizeVideo(meta, text));
         } catch (err: any) {
@@ -231,7 +244,46 @@ async function main() {
     return;
   }
 
-  // --- Build and deliver the brief ----------------------------------------
+  // --- No API key: pack the day into a zip for Claude ---------------------
+  if (!summarizeHere) {
+    const archivedToday = fresh
+      .map(({ video }) => seen[video.id])
+      .filter(Boolean);
+
+    if (!archivedToday.length) {
+      console.log(`\n${c.bold("Done.")} Nothing new to bundle.`);
+      for (const p of problems) console.log(c.dim(`  · ${p}`));
+      return;
+    }
+
+    const { buffer, included, skipped } = await buildBundle(
+      archivedToday,
+      `${date} — daily brief`
+    );
+    await mkdir(BUNDLES_DIR, { recursive: true });
+    const zipPath = resolve(BUNDLES_DIR, `${date}-brief.zip`);
+    await writeFile(zipPath, buffer);
+
+    console.log(
+      `\n${c.bold("Done.")} ${c.green(`${included} transcript(s) bundled`)}` +
+        (skipped ? `, ${c.yellow(`${skipped} without one`)}` : "") +
+        (problems.length ? `, ${c.yellow(`${problems.length} problem(s)`)}` : "") +
+        `\n${c.dim(zipPath)}\n\n` +
+        `Drop that zip into a Claude chat, then paste PROMPT.md from inside it.`
+    );
+    if (gone.length) {
+      console.log(
+        c.yellow(
+          `\n${gone.length} video(s) disappeared from a channel — worth a look:`
+        )
+      );
+      for (const g of gone) console.log(c.dim(`  · ${g.channel} — ${g.title}`));
+    }
+    for (const p of problems) console.log(c.dim(`  · ${p}`));
+    return;
+  }
+
+  // --- API key present: summarize and deliver the brief here --------------
   let overview: Pick<Brief, "headline" | "overview" | "throughlines">;
   try {
     overview = await summarizeDay(summaries, date);
