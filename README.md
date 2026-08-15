@@ -26,9 +26,16 @@ npm run captions -- "@SomeChannel" --count 25 --sort most_viewed
 npm run captions -- "https://youtu.be/VIDEO_ID" --out ~/Desktop/notes
 ```
 
-Transcripts land in `./transcripts` (one `.txt` per video). Anything skipped
-is explained in `transcripts/_skipped.txt`. Run `npm run captions -- --help`
-for all options.
+Transcripts land in `./transcripts` (one `.txt` per video), named
+`2025-08-03 Title [videoid].txt` so the folder sorts oldest-to-newest by
+publish date on its own. Anything skipped is explained in
+`transcripts/_skipped.txt`.
+
+**Re-running only fetches what you don't already have.** Point the same command
+at the same `--out` folder whenever you like and it tops up that creator's
+archive — the filenames are the record of what's downloaded, so it stays
+correct even if you move or delete files by hand. `--force` re-downloads
+everything. `npm run captions -- --help` lists all options.
 
 ## Daily brief
 
