@@ -6,9 +6,11 @@
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
-    "captions": "tsx scripts/captions.ts"
+    "captions": "tsx scripts/captions.ts",
+    "daily": "tsx scripts/daily.ts"
   },
   "dependencies": {
+    "@anthropic-ai/sdk": "^0.117.1",
     "bgutils-js": "^4.0.3",
     "jsdom": "^26.1.0",
     "jszip": "^3.10.1",
