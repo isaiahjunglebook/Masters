@@ -22,6 +22,25 @@ const dispatcher = process.env.PROXY_URL
   ? new ProxyAgent(process.env.PROXY_URL)
   : undefined;
 
+/** A usable YOUTUBE_COOKIE is the whole `Cookie:` request header from a
+ *  logged-in session. The most common mistake is pasting a fragment (or a
+ *  logged-out cookie), which lacks SAPISID — the value youtubei.js needs to
+ *  sign authenticated requests. Without SAPISID the cookie silently behaves
+ *  like no cookie at all, so say so loudly at startup. */
+export function cookieProblem(): string | null {
+  const cookie = process.env.YOUTUBE_COOKIE;
+  if (!cookie) return null;
+  if (!/(^|;\s*)SAPISID=/.test(cookie)) {
+    return "YOUTUBE_COOKIE has no SAPISID — it looks like a partial copy or a " +
+      "logged-out session. Copy the entire Cookie request header while signed " +
+      "in to youtube.com.";
+  }
+  return null;
+}
+
+const startupCookieProblem = cookieProblem();
+if (startupCookieProblem) console.log(`[cookie] ${startupCookieProblem}`);
+
 /** Fetch for raw YouTube resources (e.g. timedtext caption files): applies
  *  the proxy and cookie when configured. */
 export async function youtubeFetch(
