@@ -29,17 +29,47 @@ npm run captions -- "https://youtu.be/VIDEO_ID" --out ~/Desktop/notes
 Transcripts land in `./transcripts` (one `.txt` per video). Anything skipped
 is explained in `transcripts/_skipped.txt`. Run `npm run captions -- --help`
 for all options.
+
 ## Daily brief
 
 Whitelist the creators you follow, and one command scrapes them, archives every
-new video's transcript, and writes a summarized brief.
+new video's transcript, and packs the day up for Claude to read.
 
 ```bash
 npm run dev          # add creators in the "Daily brief" tab at localhost:3000
-npm run daily        # scrape, archive, summarize, deliver
+npm run daily        # scrape, archive, and pack the day into a zip for Claude
 npm run daily -- --since 3    # catch up after a few days away
-npm run daily -- --dry-run    # scrape and archive only, no summarizing
+npm run daily -- --dry-run    # scrape and archive only
 ```
+
+By default there's **no API key involved**: the run archives everything and
+writes `data/bundles/<date>-brief.zip`. Drop that zip into a Claude chat (or
+point a Claude Code session at it) and paste `PROMPT.md` from inside it — the
+analysis happens wherever you already have Claude.
+
+The prompt lives at [`prompts/daily-brief.md`](prompts/daily-brief.md) and is
+copied into every bundle, so editing it there changes every future brief. It's
+written to collapse redundancy across creators — one item per distinct claim
+listing who said it, rather than one item per creator — and to surface
+contradictions rather than smooth them into a consensus.
+
+### Bundling any slice of the archive
+
+```bash
+npm run bundle                     # what was archived today
+npm run bundle -- --since 7        # the last week
+npm run bundle -- --creator <id>   # one creator (id from data/creators.json)
+npm run bundle -- --all            # the entire archive
+```
+
+Each zip carries `PROMPT.md`, `INDEX.csv` (every video, including ones with no
+transcript and why), `README.md`, and a `transcripts/` folder.
+
+### Summarizing locally instead (optional)
+
+Set `ANTHROPIC_API_KEY` and `npm run daily` will summarize on this machine and
+write `data/briefs/<date>.html` instead of a zip. Use `--bundle` to force the
+zip even with a key set.
 
 Everything lands in `./data`:
 
@@ -48,10 +78,8 @@ Everything lands in `./data`:
 | `data/creators.json` | The whitelist |
 | `data/archive/<creator>/<date> <title> [id].txt` | Every transcript, kept permanently |
 | `data/seen.json` | What's been archived, and what has since disappeared |
-| `data/briefs/<date>.html` | The brief itself |
-
-Summarizing needs an [Anthropic API key](https://platform.claude.com) in
-`ANTHROPIC_API_KEY`. Without one, `--dry-run` still scrapes and archives.
+| `data/bundles/<date>-brief.zip` | The day, packed for Claude |
+| `data/briefs/<date>.html` | The brief, when summarizing locally |
 
 ### Why the archive matters
 
@@ -120,7 +148,7 @@ Both wait ~1.5–2s between videos to stay polite to YouTube.
 | `PAGE_PASSWORD`     | no       | Optional password to gate a public deployment; unset = open     |
 | `YOUTUBE_COOKIE`    | no       | Logged-in youtube.com Cookie header — beats the bot wall (free) |
 | `PROXY_URL`         | no       | Residential proxy `http://user:pass@host:port` — beats the bot wall |
-| `ANTHROPIC_API_KEY` | for briefs | Summarizes the daily brief (`npm run daily`)                 |
+| `ANTHROPIC_API_KEY` | no       | Summarize on this machine instead of bundling for Claude       |
 | `RESEND_API_KEY`    | no       | Emails the brief; without it the HTML file is still written    |
 | `BRIEF_TO`          | no       | Where to send the brief                                        |
 | `BRIEF_FROM`        | no       | Sender address; defaults to Resend's shared onboarding sender  |

@@ -19,6 +19,7 @@ export const CREATORS_FILE = resolve(DATA_DIR, "creators.json");
 export const SEEN_FILE = resolve(DATA_DIR, "seen.json");
 export const ARCHIVE_DIR = resolve(DATA_DIR, "archive");
 export const BRIEFS_DIR = resolve(DATA_DIR, "briefs");
+export const BUNDLES_DIR = resolve(DATA_DIR, "bundles");
 
 /** Read a JSON file, returning `fallback` when it doesn't exist yet. A corrupt
  *  file is a real error and is allowed to throw — silently resetting it would

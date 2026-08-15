@@ -7,7 +7,8 @@
     "build": "next build",
     "start": "next start",
     "captions": "tsx scripts/captions.ts",
-    "daily": "tsx scripts/daily.ts"
+    "daily": "tsx scripts/daily.ts",
+    "bundle": "tsx scripts/bundle.ts"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.117.1",
