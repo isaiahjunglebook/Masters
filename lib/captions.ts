@@ -6,6 +6,11 @@ export interface Segment {
   text: string;
 }
 
+/** Where a transcript's words came from. `manual` means a human wrote (or
+ *  corrected) them and is materially more trustworthy — worth recording, since
+ *  any analysis of what was said should weight the two differently. */
+export type CaptionKind = "manual" | "asr";
+
 /** Everything worth knowing about a video besides its words. Kept flat and
  *  primitive so it drops straight into a CSV row or a DataFrame. */
 export interface VideoMeta {
@@ -25,6 +30,9 @@ export interface VideoMeta {
    *  the publish time is the start, and calls are spread across hours). */
   is_live_content: boolean | null;
   description: string | null;
+  /** How the words were produced, and in which language track. */
+  caption_kind: CaptionKind | null;
+  caption_language: string | null;
 }
 
 export interface TranscriptResult {
@@ -158,13 +166,18 @@ function parseTimedtext(body: string): Segment[] {
 }
 
 /** Download and parse the caption-track file (timedtext) from a player
- *  response, preferring the auto-generated English track. Returns segments,
- *  or null after pushing a diagnostic onto `errors`. */
+ *  response. Returns segments and their provenance, or null after pushing a
+ *  diagnostic onto `errors`.
+ *
+ *  Track preference is accuracy-ordered: a human-written English track beats
+ *  YouTube's speech recognition every time — punctuation, proper nouns and
+ *  numbers are all transcribed rather than guessed — so take one whenever the
+ *  uploader provided it, and only fall back to the `asr` track otherwise. */
 async function captionsFromTracks(
   info: any,
   label: string,
   errors: string[]
-): Promise<Segment[] | null> {
+): Promise<{ segments: Segment[]; kind: CaptionKind; language: string | null } | null> {
   try {
     const tracks: any[] = info.captions?.caption_tracks ?? [];
     if (!tracks.length) {
@@ -173,10 +186,15 @@ async function captionsFromTracks(
       errors.push(`${label}: no caption tracks (playability: ${status || "unknown"})`);
       return null;
     }
+    const isEnglish = (t: any) => t.language_code?.startsWith("en");
+    const isManual = (t: any) => t.kind !== "asr";
     const track =
-      tracks.find((t) => t.kind === "asr" && t.language_code?.startsWith("en")) ??
-      tracks.find((t) => t.kind === "asr") ??
+      tracks.find((t) => isManual(t) && isEnglish(t)) ??
+      tracks.find((t) => t.kind === "asr" && isEnglish(t)) ??
+      tracks.find(isManual) ??
       tracks[0];
+    const kind: CaptionKind = track.kind === "asr" ? "asr" : "manual";
+    const language: string | null = track.language_code ?? null;
     // Drop any fmt the track URL already carries (ANDROID/TV tracks often ship
     // fmt=srv3), then request json3 explicitly — a conflicting fmt is a likely
     // reason YouTube ignores our request and returns XML.
@@ -192,7 +210,7 @@ async function captionsFromTracks(
       return null;
     }
     const segments = parseTimedtext(body);
-    if (segments.length) return segments;
+    if (segments.length) return { segments, kind, language };
     // Surface the start of the raw body so an unrecognized format is
     // diagnosable from the skip reason without another round-trip.
     const snippet = body.replace(/\s+/g, " ").trim().slice(0, 200);
@@ -261,6 +279,9 @@ function metaFrom(info: any, id: string, fallbackTitle: string): VideoMeta {
     is_live_content:
       typeof basic.is_live_content === "boolean" ? basic.is_live_content : null,
     description: basic.short_description ?? null,
+    // Filled in once we know which track the words actually came from.
+    caption_kind: null,
+    caption_language: null,
   };
 }
 
@@ -305,10 +326,15 @@ export async function fetchTranscript(
     channel_id: null,
     is_live_content: null,
     description: null,
+    caption_kind: null,
+    caption_language: null,
   };
 
-  const render = (segments: Segment[]): TranscriptResult => ({
-    meta,
+  const render = (
+    segments: Segment[],
+    source: { kind: CaptionKind; language: string | null }
+  ): TranscriptResult => ({
+    meta: { ...meta, caption_kind: source.kind, caption_language: source.language },
     segments,
     text: options.timestamps
       ? timestampedText(segments)
@@ -318,6 +344,13 @@ export async function fetchTranscript(
   try {
     const info = await yt.getInfo(id);
     meta = mergeMeta(metaFrom(info, id, fallbackTitle), meta);
+
+    // Caption tracks come first: they let us choose a human-written track over
+    // speech recognition, and they tell us which one we got. The transcript
+    // panel serves whichever track YouTube defaults to without saying which,
+    // so it's the fallback rather than the first choice.
+    const tracked = await captionsFromTracks(info, "WEB", errors);
+    if (tracked) return render(tracked.segments, tracked);
 
     try {
       const transcriptInfo = await info.getTranscript();
@@ -329,14 +362,21 @@ export async function fetchTranscript(
           text: seg?.snippet?.text?.toString() ?? "",
         }))
         .filter((s: Segment) => s.text.trim());
-      if (segments.length) return render(segments);
+      if (segments.length) {
+        // Provenance genuinely unknown here — don't guess a value an analysis
+        // might weight by.
+        return {
+          meta,
+          segments,
+          text: options.timestamps
+            ? timestampedText(segments)
+            : cleanText(segments.map((s) => s.text).join(" ")),
+        };
+      }
       errors.push(`transcript panel empty (${initial.length} segments)`);
     } catch (err: any) {
       errors.push(`transcript panel: ${err?.message ?? "unknown error"}`);
     }
-
-    const segments = await captionsFromTracks(info, "WEB", errors);
-    if (segments) return render(segments);
   } catch (err: any) {
     errors.push(`getInfo: ${err?.message ?? "unknown error"}`);
   }
@@ -345,8 +385,8 @@ export async function fetchTranscript(
     try {
       const info = await yt.getBasicInfo(id, { client });
       meta = mergeMeta(meta, metaFrom(info, id, fallbackTitle));
-      const segments = await captionsFromTracks(info, client, errors);
-      if (segments) return render(segments);
+      const tracked = await captionsFromTracks(info, client, errors);
+      if (tracked) return render(tracked.segments, tracked);
     } catch (err: any) {
       errors.push(`${client}: ${err?.message ?? "unknown error"}`);
     }
@@ -412,6 +452,9 @@ export function transcriptFile(meta: VideoMeta, text: string): string {
     `Duration (s): ${meta.duration_seconds ?? "unknown"}`,
     `Views: ${meta.view_count ?? "unknown"}`,
     `Livestream: ${meta.is_live_content === null ? "unknown" : meta.is_live_content}`,
+    `Captions: ${meta.caption_kind ?? "unknown"}${
+      meta.caption_language ? ` (${meta.caption_language})` : ""
+    }`,
     `Video ID: ${meta.id}`,
     `URL: https://www.youtube.com/watch?v=${meta.id}`,
   ].join("\n");
@@ -449,6 +492,8 @@ export function indexCsv(
     "view_count",
     "like_count",
     "is_live_content",
+    "caption_kind",
+    "caption_language",
     "transcript_chars",
     "transcript_file",
   ];
@@ -470,6 +515,8 @@ export function indexCsv(
         meta.view_count,
         meta.like_count,
         meta.is_live_content,
+        meta.caption_kind,
+        meta.caption_language,
         chars,
         file,
       ]
