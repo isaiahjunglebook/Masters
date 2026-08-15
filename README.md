@@ -1,18 +1,49 @@
 # YouTube Caption Downloader
 
-A private, single-user Next.js app for downloading auto-generated captions
-from a YouTube channel as a zip of `.txt` transcripts.
+Download a YouTube channel's auto-generated captions as `.txt` transcripts —
+from the **terminal** (`npm run captions`) or a **web page** (`npm run dev`).
+Both share one engine in `lib/`.
 
 - **No accounts, no OAuth, no API keys, no database.** Runs open locally with
   no login. An optional shared password (`PAGE_PASSWORD`) can gate the page if
   you deploy it to a public URL.
-- **`/api/videos`** — resolves a channel handle/URL and lists its videos using
-  [youtubei.js](https://github.com/LuanRT/YouTube.js) (YouTube's internal API,
-  no key needed). Sorting (recent / oldest / most viewed) uses the channel
+
+## Quick start (terminal — recommended)
+
+Running on your own machine uses your home IP, which YouTube doesn't block —
+so no cookie or proxy is needed. Requires [Node.js](https://nodejs.org) 20+.
+
+```bash
+npm install
+
+# A whole channel (10 most recent by default)
+npm run captions -- "https://www.youtube.com/@SomeChannel"
+
+# More videos, most-viewed first
+npm run captions -- "@SomeChannel" --count 25 --sort most_viewed
+
+# Specific videos, saved somewhere else
+npm run captions -- "https://youtu.be/VIDEO_ID" --out ~/Desktop/notes
+```
+
+Transcripts land in `./transcripts` (one `.txt` per video). Anything skipped
+is explained in `transcripts/_skipped.txt`. Run `npm run captions -- --help`
+for all options.
+## How it works
+
+Shared engine, two front ends:
+
+- **`lib/channel.ts`** — resolves a channel handle/URL and lists its videos
+  using [youtubei.js](https://github.com/LuanRT/YouTube.js) (YouTube's internal
+  API, no key needed). Sorting (recent / oldest / most viewed) uses the channel
   page's own Latest / Oldest / Popular filters, then returns the top N.
-- **`/api/captions`** — fetches each video's public auto-generated transcript
-  with youtubei.js, waits ~1.5–2s between videos, skips videos without
-  captions, and streams back a zip (one `.txt` per video) built with jszip.
+- **`lib/captions.ts`** — fetches a video's auto-generated transcript, trying
+  the transcript panel first and then caption-track (timedtext) files across
+  five YouTube clients, so one degraded response doesn't lose the video.
+- **`scripts/captions.ts`** — the CLI: writes `.txt` files to a folder.
+- **`app/api/*`** — the web app: same calls, streamed back as a zip via jszip.
+
+Both wait ~1.5–2s between videos to stay polite to YouTube.
 
 ## Environment variables
 
@@ -59,7 +90,9 @@ error, not the bot wall: YouTube only serves them to paying members of that
 channel. They can't be downloaded unless `YOUTUBE_COOKIE` comes from an
 account that is a member of the channel.
 
-## Local development
+## Local web UI
+
+Prefer clicking to typing? Same thing with a checklist of videos:
 
 ```bash
 npm install
