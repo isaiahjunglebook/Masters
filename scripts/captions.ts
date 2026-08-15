@@ -44,7 +44,7 @@ ${c.bold("Download YouTube auto-caption transcripts as .txt files")}
   npm run captions -- <video-url> [<video-url> ...] [options]
 
 Options:
-  --count <n>    How many videos to take from the channel   (default 10)
+  --count <n>    How many videos to take from the channel   (default 10, no max)
   --sort <mode>  recent | oldest | most_viewed              (default recent)
   --out <dir>    Where to write the .txt files              (default ./transcripts)
   --help         Show this message
@@ -81,7 +81,9 @@ function parseArgs(argv: string[]): Options | null {
         if (!Number.isFinite(n) || n < 1) {
           throw new Error(`--count must be a positive number, got "${value}"`);
         }
-        count = Math.min(500, Math.floor(n));
+        // No upper clamp here: the web API caps at 500 because a serverless
+        // function times out, but a local run has all the time it wants.
+        count = Math.floor(n);
       } else if (arg === "--sort") {
         if (!SORT_MODES.includes(value as SortMode)) {
           throw new Error(`--sort must be one of ${SORT_MODES.join(" | ")}`);
