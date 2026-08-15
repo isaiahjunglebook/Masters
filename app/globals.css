@@ -318,3 +318,62 @@ button.chip.active {
   font-size: 0.92em;
   padding: 1px 5px;
 }
+
+/* --- Save to folder / Whisper ------------------------------------------ */
+.save-box {
+  background: rgba(127, 127, 127, 0.05);
+  border: 1px solid var(--line, #2a2a2a);
+  border-radius: 8px;
+  margin-top: 18px;
+  padding: 16px;
+}
+.save-box input[type="text"] { width: 100%; }
+.check-row {
+  align-items: flex-start;
+  cursor: pointer;
+  display: flex;
+  gap: 10px;
+  line-height: 1.5;
+  margin-top: 14px;
+}
+.check-row input { margin-top: 3px; flex-shrink: 0; }
+.check-row span { font-size: 14px; }
+.setup-warn {
+  background: rgba(229, 72, 77, 0.08);
+  border: 1px solid rgba(229, 72, 77, 0.3);
+  border-radius: 6px;
+  font-size: 14px;
+  margin-top: 14px;
+  padding: 12px 14px;
+}
+.setup-warn ul { margin: 10px 0; padding-left: 20px; }
+.setup-warn li { margin-bottom: 4px; }
+.setup-warn pre {
+  background: rgba(0, 0, 0, 0.35);
+  border-radius: 4px;
+  font-size: 13px;
+  margin: 6px 0 0;
+  overflow-x: auto;
+  padding: 10px 12px;
+  user-select: all;
+}
+
+/* --- Job progress ------------------------------------------------------ */
+.job-panel { margin-top: 16px; }
+.job-list { list-style: none; margin: 12px 0 0; padding: 0; }
+.job-list li {
+  align-items: flex-start;
+  border-top: 1px solid var(--line, #2a2a2a);
+  display: flex;
+  gap: 10px;
+  padding: 9px 0;
+}
+.job-list li:first-child { border-top: none; }
+.job-icon { flex-shrink: 0; width: 18px; }
+.job-detail {
+  color: var(--muted, #9a9a9a);
+  font-size: 13px;
+  margin-top: 2px;
+}
+.job-skipped { opacity: 0.55; }
+.job-working { color: var(--accent, #e5484d); }

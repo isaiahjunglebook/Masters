@@ -29,6 +29,29 @@ interface Creator {
 
 type Tab = "download" | "creators";
 
+interface Setup {
+  ready: boolean;
+  tools: { name: string; installed: boolean; purpose: string; install: string }[];
+  installCommand: string | null;
+  audio: { dailyCap: number; remainingToday: number };
+}
+
+interface JobItem {
+  id: string;
+  title: string;
+  status: "pending" | "working" | "saved" | "skipped";
+  detail?: string;
+  file?: string;
+}
+
+interface Job {
+  id: string;
+  state: "running" | "done" | "failed" | "stopped";
+  outDir: string;
+  message?: string;
+  items: JobItem[];
+}
+
 const COUNT_PRESETS = [5, 10, 25, 50];
 
 const SORT_LABELS: Record<SortMode, string> = {
@@ -82,6 +105,12 @@ export default function Home() {
   // Tabs
   const [tab, setTab] = useState<Tab>("download");
 
+  // Save-to-folder + Whisper
+  const [outDir, setOutDir] = useState("~/Desktop/transcripts");
+  const [useWhisper, setUseWhisper] = useState(false);
+  const [setup, setSetup] = useState<Setup | null>(null);
+  const [job, setJob] = useState<Job | null>(null);
+
   // Creators (daily brief whitelist)
   const [creators, setCreators] = useState<Creator[]>([]);
   const [creatorInput, setCreatorInput] = useState("");
@@ -127,6 +156,67 @@ export default function Home() {
     } finally {
       setChecking(false);
     }
+  }
+
+  // --- Save to folder, optionally via Whisper -----------------------------
+  // Check for yt-dlp/ffmpeg/whisper once unlocked, so the Whisper checkbox can
+  // explain itself rather than failing mid-run.
+  useEffect(() => {
+    if (!unlocked) return;
+    fetch("/api/setup", { headers: authHeaders })
+      .then((r) => r.json())
+      .then((d) => {
+        if (!d.error) setSetup(d);
+      })
+      .catch(() => {
+        /* leave null — the checkbox just won't show a status */
+      });
+  }, [unlocked]);
+
+  // Poll the running job. Whisper runs for minutes per video, so progress has
+  // to come from polling rather than one long request.
+  useEffect(() => {
+    if (!job || job.state !== "running") return;
+    const timer = setInterval(async () => {
+      try {
+        const res = await fetch(`/api/jobs?id=${job.id}`, { headers: authHeaders });
+        const data = await res.json();
+        if (data.job) setJob(data.job);
+      } catch {
+        /* transient — keep polling */
+      }
+    }, 2000);
+    return () => clearInterval(timer);
+  }, [job?.id, job?.state]);
+
+  async function startSaveJob() {
+    setError("");
+    try {
+      const res = await fetch("/api/jobs", {
+        method: "POST",
+        headers: authHeaders,
+        body: JSON.stringify({
+          videos: videos
+            .filter((v) => selected.has(v.id))
+            .map((v) => ({ id: v.id, title: v.title })),
+          outDir,
+          useWhisper,
+        }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error ?? "Couldn't start");
+      setJob(data.job);
+    } catch (err: any) {
+      setError(err.message);
+    }
+  }
+
+  async function stopJobNow() {
+    if (!job) return;
+    await fetch(`/api/jobs?id=${job.id}`, {
+      method: "DELETE",
+      headers: authHeaders,
+    }).catch(() => {});
   }
 
   // --- Creators tab (the daily brief's whitelist) -------------------------
@@ -574,22 +664,130 @@ export default function Home() {
             ))}
           </ul>
 
+          <div className="save-box">
+            <label htmlFor="outdir">Save to this folder on your Mac</label>
+            <input
+              id="outdir"
+              type="text"
+              placeholder="~/Desktop/xrp"
+              value={outDir}
+              onChange={(e) => setOutDir(e.target.value)}
+            />
+            <p className="hint">
+              Re-running later only adds videos you don&apos;t already have, so
+              this folder becomes that creator&apos;s archive. Files are named
+              date-first, so they sort themselves.
+            </p>
+
+            <label className="check-row">
+              <input
+                type="checkbox"
+                checked={useWhisper}
+                onChange={(e) => setUseWhisper(e.target.checked)}
+                disabled={setup !== null && !setup.ready}
+              />
+              <span>
+                <strong>Also transcribe the audio with Whisper</strong> — more
+                accurate, but a few minutes per video. The audio file is deleted
+                right after; you keep one merged transcript.
+              </span>
+            </label>
+
+            {setup && !setup.ready && (
+              <div className="setup-warn">
+                <strong>Whisper needs three programs installed first.</strong>
+                <ul>
+                  {setup.tools.map((t) => (
+                    <li key={t.name}>
+                      {t.installed ? "✅" : "❌"} <code>{t.name}</code> — {t.purpose}
+                    </li>
+                  ))}
+                </ul>
+                <p>Paste this into Terminal, then reload this page:</p>
+                <pre>{setup.installCommand}</pre>
+              </div>
+            )}
+            {setup?.ready && useWhisper && (
+              <p className="note">
+                Ready. {setup.audio.remainingToday} audio download
+                {setup.audio.remainingToday === 1 ? "" : "s"} left today (limit{" "}
+                {setup.audio.dailyCap}/day, to stay under YouTube&apos;s radar).
+              </p>
+            )}
+          </div>
+
           <div className="row" style={{ marginTop: 16 }}>
             <button
               className="primary"
+              onClick={startSaveJob}
+              disabled={
+                Boolean(job && job.state === "running") ||
+                selectedCount === 0 ||
+                !outDir.trim()
+              }
+            >
+              {job?.state === "running" ? (
+                <>
+                  <span className="spinner" />
+                  Working…
+                </>
+              ) : (
+                `Save ${selectedCount} to folder`
+              )}
+            </button>
+            <button
               onClick={downloadCaptions}
               disabled={downloading || selectedCount === 0}
             >
               {downloading ? (
                 <>
                   <span className="spinner" />
-                  Downloading captions… (~{estimatedSeconds}s)
+                  Zipping… (~{estimatedSeconds}s)
                 </>
               ) : (
-                `Download captions (zip) — ${selectedCount} selected`
+                "Or download as zip"
               )}
             </button>
+            {job?.state === "running" && (
+              <button className="link-danger" onClick={stopJobNow}>
+                Stop
+              </button>
+            )}
           </div>
+
+          {job && (
+            <div className="panel job-panel">
+              <h3>
+                {job.state === "running"
+                  ? "Working…"
+                  : job.state === "done"
+                    ? "Finished"
+                    : job.state === "stopped"
+                      ? "Stopped"
+                      : "Failed"}
+              </h3>
+              {job.message && <p className="note">{job.message}</p>}
+              <ul className="job-list">
+                {job.items.map((it) => (
+                  <li key={it.id} className={`job-${it.status}`}>
+                    <span className="job-icon">
+                      {it.status === "saved"
+                        ? "✅"
+                        : it.status === "working"
+                          ? "⏳"
+                          : it.status === "skipped"
+                            ? "—"
+                            : "·"}
+                    </span>
+                    <span>
+                      <strong>{it.title}</strong>
+                      {it.detail && <div className="job-detail">{it.detail}</div>}
+                    </span>
+                  </li>
+                ))}
+              </ul>
+            </div>
+          )}
           {downloading && (
             <p className="notice">
               Captions are fetched one at a time with a short pause between
