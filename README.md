@@ -72,9 +72,39 @@ npm run bundle -- --all            # the entire archive
 Each zip carries `PROMPT.md`, `INDEX.csv` (every video, including ones with no
 transcript and why), `README.md`, and a `transcripts/` folder.
 
-### Summarizing locally instead (optional)
+### Summarizing on your own machine (optional, free)
 
-Set `ANTHROPIC_API_KEY` and `npm run daily` will summarize on this machine and
+With [Ollama](https://ollama.com) installed, the per-video pass runs locally
+and the bundle ships those summaries alongside the transcripts:
+
+```bash
+brew install ollama
+ollama serve            # leave running in its own Terminal tab
+ollama pull qwen3:32b   # ~20GB; see the table below for other sizes
+
+npm run summarize            # today's transcripts
+npm run summarize -- --all   # the whole archive
+npm run bundle               # now includes SUMMARIES.md
+```
+
+The split is deliberate. A local model handles one transcript at a time well —
+contained, mechanical, and the high-volume part. Reasoning *across* twenty
+creators over tens of thousands of tokens of garbled auto-caption text is where
+small models lose the thread, so that stays in the Claude conversation, which
+now reads twenty summaries instead of twenty full transcripts.
+
+| Your RAM | Model to pull | Size |
+| --- | --- | --- |
+| 16 GB | `llama3.1:8b` | ~5 GB |
+| 32 GB | `qwen3:32b` | ~20 GB |
+| 64 GB+ | `llama3.3:70b` | ~43 GB |
+
+Override the default with `--model <name>` or `OLLAMA_MODEL`. Summaries are
+saved after each video, so a long run survives a failure partway through.
+
+### Summarizing via the Claude API instead (optional)
+
+Set `ANTHROPIC_API_KEY` and `npm run daily` will summarize through the API and
 write `data/briefs/<date>.html` instead of a zip. Use `--bundle` to force the
 zip even with a key set.
 
@@ -160,6 +190,10 @@ Both wait ~1.5–2s between videos to stay polite to YouTube.
 | `BRIEF_TO`          | no       | Where to send the brief                                        |
 | `BRIEF_FROM`        | no       | Sender address; defaults to Resend's shared onboarding sender  |
 | `DATA_DIR`          | no       | Where the archive lives; defaults to `./data`                   |
+| `OLLAMA_MODEL`      | no       | Which local model to summarize with; default is the best installed |
+| `OLLAMA_HOST`       | no       | Ollama's address; defaults to `http://127.0.0.1:11434`          |
+| `OLLAMA_CONTEXT`    | no       | Context window for local summaries; defaults to 16384 tokens    |
+| `AUDIO_DAILY_CAP`   | no       | Max audio downloads per day; defaults to 40                     |
 
 ### The YouTube bot wall
 

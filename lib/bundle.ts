@@ -1,7 +1,7 @@
 import JSZip from "jszip";
 import { readFile } from "node:fs/promises";
 import { resolve } from "node:path";
-import { ARCHIVE_DIR } from "./store";
+import { ARCHIVE_DIR, DATA_DIR } from "./store";
 import type { SeenVideo } from "./archive";
 
 /**
@@ -33,6 +33,16 @@ async function loadPrompt(): Promise<string> {
 /** Why a video isn't in the zip: no transcript was ever fetched, or the
  *  archived file couldn't be read now. */
 type Missing = { video: SeenVideo; reason: string };
+
+/** The locally-generated summaries document, when `npm run summarize` has been
+ *  run. Absent is the normal case, not an error. */
+async function loadSummaries(): Promise<string | null> {
+  try {
+    return await readFile(resolve(DATA_DIR, "SUMMARIES.md"), "utf8");
+  } catch {
+    return null;
+  }
+}
 
 /** One row per video, so the model can see the shape of the batch before
  *  reading any of it — and so you can sort/filter in a spreadsheet. Status is
@@ -91,6 +101,10 @@ ${channels.map((c) => `  - ${c}`).join("\n")}
 
 INDEX.csv lists every video with its date, channel, and URL, including the ones
 with no transcript.
+
+If SUMMARIES.md is present, it holds per-video summaries already generated on
+the local machine — read that first, and dip into transcripts/ only when you
+need the exact wording of something.
 
 ## What's in each transcript
 
@@ -154,6 +168,12 @@ export async function buildBundle(
   zip.file("PROMPT.md", await loadPrompt());
   zip.file("INDEX.csv", indexCsv(videos, missingById));
   zip.file("README.md", readme(videos, label, included, missing));
+
+  // If transcripts have already been summarized locally, ship that too — it's
+  // a fraction of the size and far easier to reason across than the raw text,
+  // which is the whole point of doing the per-video pass on this machine.
+  const summaries = await loadSummaries();
+  if (summaries) zip.file("SUMMARIES.md", summaries);
 
   const buffer = await zip.generateAsync({
     type: "nodebuffer",
